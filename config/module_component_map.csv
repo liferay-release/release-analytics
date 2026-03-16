@@ -1,0 +1,288 @@
+modules_directory,testray_main_component
+modules/apps/accessibility,Accessibility Menu
+modules/apps/account,Account
+modules/apps/adaptive-media,Adaptive Media
+modules/apps/address,Address
+modules/apps/ai-creator,AI-Creator
+modules/apps/analytics,Analytics Cloud
+modules/apps/announcements,Announcements
+modules/apps/application-list,Control Menu
+modules/apps/archived,Archived Apps
+modules/apps/asset,Asset Framework
+modules/apps/asset-tags-validator,Asset Publisher Widget
+modules/apps/batch-engine,Headless Batch Engine API
+modules/apps/batch-planner,Data Migration Center
+modules/apps/bean-portlet,Bean Portlet
+modules/apps/blogs,Blogs
+modules/apps/bookmarks,Bookmarks
+modules/apps/bulk,Documents and Media
+modules/apps/calendar,Calendar
+modules/apps/captcha,CAPTCHA
+modules/apps/changeset,Staging
+modules/apps/change-tracking,Publications
+modules/apps/click-to-chat,Click to Chat
+modules/apps/client-extension,Frontend Client Extensions
+modules/apps/comment,Comment
+modules/apps/commerce,Commerce
+modules/apps/company,Virtual Instances
+modules/apps/configuration-admin,System Settings
+modules/apps/connected-app,Documents and Media
+modules/apps/consent-management-platform,Application Security
+modules/apps/contacts,Contacts Center
+modules/apps/content-dashboard,Content Dashboard
+modules/apps/cookies,Cookies
+modules/apps/counter,Portal Services
+modules/apps/data-cleanup,Data Cleanup
+modules/apps/data-engine,Data Engine
+modules/apps/depot,Asset Libraries
+modules/apps/diff,Portal Services
+modules/apps/digital-signature,Digital Signature
+modules/apps/dispatch,Job Scheduler
+modules/apps/document-library,Documents and Media
+modules/apps/document-library-google-docs,External Document Repositories
+modules/apps/document-library-opener,External Document Repositories
+modules/apps/dynamic-data-lists,Dynamic Data Lists
+modules/apps/dynamic-data-mapping,Dynamic Data Mapping
+modules/apps/expando,Custom Fields
+modules/apps/export-import,Export/Import
+modules/apps/external-reference,Portal Services
+modules/apps/feature-flag,Feature Flag
+modules/apps/flags,Page > Page Flags
+modules/apps/fragment,Fragment Administration
+modules/apps/friendly-url,Friendly URL Service
+modules/apps/frontend-css,Liferay Themes
+modules/apps/frontend-data-set,Frontend Data Set
+modules/apps/frontend-editor,Frontend Editor
+modules/apps/frontend-icons,Frontend Other
+modules/apps/frontend-js,Frontend JS
+modules/apps/frontend-taglib,Frontend Taglib
+modules/apps/frontend-theme,Liferay Themes
+modules/apps/frontend-token,Style Books
+modules/apps/glowroot,Glow Root
+modules/apps/gogo-shell,Gogo Shell
+modules/apps/google-places,Google Places
+modules/apps/headless,Headless
+modules/apps/iframe,IFrame Portlet
+modules/apps/image,Documents and Media
+modules/apps/imageio-plugins,Portal Services
+modules/apps/image-uploader,
+modules/apps/info,Info Framework
+modules/apps/invitation,Invite Members
+modules/apps/ip-geocoder,Analytics Cloud
+modules/apps/item-selector,Item Selector
+modules/apps/journal,Web Content
+modules/apps/json-storage,Portal Services
+modules/apps/knowledge-base,Knowledge Base
+modules/apps/layout,Content Pages
+modules/apps/learn,Setup Wizard
+modules/apps/license-manager,License
+modules/apps/list-type,Object
+modules/apps/locked-items,Knowledge Base
+modules/apps/login,Login
+modules/apps/mail,Portal Services
+modules/apps/map,Frontend Other
+modules/apps/marketplace,Marketplace
+modules/apps/mcp,
+modules/apps/mentions,Mentions
+modules/apps/message-boards,Message Boards
+modules/apps/microblogs,Microblogs
+modules/apps/microsoft-translator,Translations Management
+modules/apps/monitoring,Monitoring
+modules/apps/my-subscriptions,My Subscriptions Widget
+modules/apps/nested-portlets,Nested Portlets Widget
+modules/apps/normalizer,Portal Services
+modules/apps/notification,Notifications Framework
+modules/apps/notifications,Notifications
+modules/apps/oauth2-provider,OAuth 2
+modules/apps/oauth-client,OAuth 2
+modules/apps/object,Objects
+modules/apps/on-demand-admin,On Demand Admin
+modules/apps/organizations,Users and Organizations
+modules/apps/password-policies-admin,Password Policies
+modules/apps/password-policy,Password Policies
+modules/apps/plugins-admin,Components Admin
+modules/apps/portal,Portal Services
+modules/apps/portal-background-task,Portal Services
+modules/apps/portal-cache,Portal Services
+modules/apps/portal-configuration,Portal Configuration
+modules/apps/portal-crypto-hash,Password
+modules/apps/portal-instances,Virtual Instances
+modules/apps/portal-language,Language Override
+modules/apps/portal-lock,Portal Services
+modules/apps/portal-model-relationship,Staging
+modules/apps/portal-odata,Headless Batch Engine API
+modules/apps/portal-osgi-debug,Portal Services
+modules/apps/portal-portlet-bridge,Portal Services
+modules/apps/portal-relationship,Portal Services
+modules/apps/portal-remote,Web Services
+modules/apps/portal-reports-engine,Reports
+modules/apps/portal-rules-engine,Rules
+modules/apps/portal-scheduler,Scheduler
+modules/apps/portal-scripting,Server Administration
+modules/apps/portal-search,Web Search
+modules/apps/portal-search-elasticsearch7,Search Infrastructure > Elasticsearch Connector
+modules/apps/portal-search-elasticsearch8,Search Infrastructure > Elasticsearch Connector
+modules/apps/portal-search-opensearch2,Search Infrastructure > OpenSearch Connector
+modules/apps/portal-search-solr8,Search Infrastructure > Solr Connector
+modules/apps/portal-security,Security
+modules/apps/portal-security-audit,Audit
+modules/apps/portal-security-sso,Security
+modules/apps/portal-settings,Login
+modules/apps/portal-store,Document Library Stores
+modules/apps/portal-template,Templates Engine
+modules/apps/portal-transaction,Portal Services
+modules/apps/portal-url-builder,Frontend Other
+modules/apps/portal-validation,Staging
+modules/apps/portal-vulcan,REST Infrastructure
+modules/apps/portal-workflow,Workflow
+modules/apps/portlet,Portal Services
+modules/apps/portlet-configuration,Widget Configuration
+modules/apps/portlet-dependency-factory,Portal Services
+modules/apps/portlet-display-template,Widget Page Templates
+modules/apps/portlet-preferences,Portal Services
+modules/apps/product-analytics,Product Analytics
+modules/apps/product-navigation,Control Menu
+modules/apps/push-notifications,Notifications
+modules/apps/questions,Questions
+modules/apps/ratings,Ratings
+modules/apps/reading-time,Blogs
+modules/apps/redirect,URL Redirections
+modules/apps/repository,Documents and Media
+modules/apps/roles,Roles
+modules/apps/rss,RSS Publisher Widget
+modules/apps/sanitizer,AntiSamy
+modules/apps/saved-content,Documents and Media
+modules/apps/segments,Segmentation
+modules/apps/server,Server Administration
+modules/apps/service-component,Portal Services
+modules/apps/shared-dependencies,Portal Services
+modules/apps/sharing,Asset Sharing
+modules/apps/site,Sites Administration
+modules/apps/site-initializer,Site Management > Site Initializer
+modules/apps/site-navigation,Navigation Menus
+modules/apps/social,Social Bookmarks
+modules/apps/staging,Staging
+modules/apps/static,File Install
+modules/apps/style-book,Style Books
+modules/apps/subscription,My Subscriptions Widget
+modules/apps/template,Templates
+modules/apps/text-localizer,Users and Organizations
+modules/apps/translation,Translations Management
+modules/apps/trash,Recycle Bin
+modules/apps/upload,Item Selector
+modules/apps/user,Users and Organizations
+modules/apps/user-associated-data,Personal Data
+modules/apps/user-groups-admin,User Groups
+modules/apps/users-admin,Users and Organizations
+modules/apps/view-count,Util
+modules/apps/website,Personal Data
+modules/apps/websocket,Portal Services
+modules/apps/wiki,Wiki
+modules/apps/words,
+modules/apps/xstream,Portal Services
+modules/dxp/apps/ai-hub,AI Hub
+modules/dxp/apps/akismet,Akismet
+modules/dxp/apps/analytics,Analytics Cloud
+modules/dxp/apps/antivirus,Antivirus
+modules/dxp/apps/commerce,Commerce
+modules/dxp/apps/commerce-avalara,Commerce
+modules/dxp/apps/commerce-demo-pack,Commerce
+modules/dxp/apps/commerce-punchout,Commerce
+modules/dxp/apps/digital-sales-room,Commerce
+modules/dxp/apps/document-library-opener,External Document Repositories
+modules/dxp/apps/enterprise-product-notification,User Notifications
+modules/dxp/apps/frontend-theme,Liferay Themes
+modules/dxp/apps/multi-factor-authentication,Multi Factor Authentication
+modules/dxp/apps/osb,Analytics Cloud
+modules/dxp/apps/portal,Portal Services
+modules/dxp/apps/portal-reports-engine-console,Reports
+modules/dxp/apps/portal-rules-engine-drools,Rules
+modules/dxp/apps/portal-search-elasticsearch-cross-cluster-replication,Search Infrastructure > Elasticsearch Connector
+modules/dxp/apps/portal-search-elasticsearch-monitoring,Search Infrastructure > Elasticsearch Connector
+modules/dxp/apps/portal-search-learning-to-rank,Search Infrastructure > Elasticsearch Connector
+modules/dxp/apps/portal-search-similar-results,Search Infrastructure > Elasticsearch Connector
+modules/dxp/apps/portal-search-tuning,Search Infrastructure > Elasticsearch Connector
+modules/dxp/apps/portal-security-audit,Audit
+modules/dxp/apps/portal-workflow,Workflow Metrics
+modules/dxp/apps/portal-workflow-kaleo-forms,Kaleo Forms Admin
+modules/dxp/apps/salesforce-connector,Commerce
+modules/dxp/apps/saml,SAML
+modules/dxp/apps/scim,SCIM
+modules/dxp/apps/search-experiences,Search Blueprints
+modules/dxp/apps/segments,Segmentation
+modules/dxp/apps/sharepoint-rest,External Document Repositories
+modules/dxp/apps/sharepoint-soap,External Document Repositories
+modules/apps/commerce,Shopping Experience
+modules/apps/commerce,Order Management
+modules/apps/commerce,Product Information Management
+modules/apps/search,Search Infrastructure
+modules/apps/user,User Management
+portal-kernel/src/com,Core Infrastructure
+modules/core/petra,Core Infrastructure
+portal-impl/src/com,Core Infrastructure
+modules/core/portal-bootstrap,Core Infrastructure
+util-taglib/src/com,Frontend Taglib
+modules/apps/frontend-view-state,Frontend Other
+modules/apps/asset-categories-admin,Categories
+modules/apps/asset-list,Asset Framework
+modules/apps/layout,Content Page Templates
+modules/apps/journal,Content Management System
+modules/apps/headless,Content Management Headless
+modules/apps/object,Object Entries REST APIs
+modules/apps/portal,Core Infrastructure
+modules/apps/commerce,Product Info Management
+modules/dxp/apps/portal-workflow-kaleo-forms,Kaleo Designer
+modules/apps/site,Site Templates
+modules/apps/portal-search,Search
+modules/apps/data-cleanup,Data Cleanup
+portal-impl,Data Cleanup
+portal-kernel,Data Cleanup
+modules/apps/portal,Database Access
+modules/dxp/apps/portal,Database Access
+portal-impl,Database Access
+portal-kernel,Database Access
+modules/apps/portal,Database Partitioning
+modules/util/portal-tools-db-partition-migration-validator,Database Partitioning
+portal-impl,Database Partitioning
+portal-kernel,Database Partitioning
+modules/apps/portal,Database Upgrade Framework
+modules/util/portal-tools-db-migration-importer,Database Upgrade Framework
+portal-impl,Database Upgrade Framework
+portal-kernel,Database Upgrade Framework
+modules/util/portal-tools-db-upgrade-client,Database Upgrade Tool
+modules/apps/headless,Headless Portal Instances API
+modules/apps/portal,Upgrade Logging
+modules/apps/portal,Upgrade Report
+modules/apps/company,Virtual Instances
+modules/apps/portal-instances,Virtual Instances
+modules/apps/portal,Virtual Instances
+portal-kernel,Virtual Instances
+modules/dxp/apps/analytics,A/B Test
+modules/apps/portal-security,Auth Verifiers
+modules/apps/portal-security,Auto Login
+modules/apps/auto-taggingt,Auto Tagging
+modules/apps/asset-list,Asset Framework
+modules/apps/layout,Display Page Templates
+modules/apps/headless,Headless Admin Configuration
+modules/apps/headless,Headless CMP API
+modules/apps/object,Headless Object API
+modules/apps/headless,Headless Site API
+modules/apps/portal-security-sso,LDAP
+modules/apps/portal-security-sso,OpenID Connect
+modules/apps/roles,Permissions
+modules/apps/asset-tags-admin,Tags
+modules/apps/site,Site Teams
+modules/apps/layout,Page Administration
+modules/apps/portal-instances,Instance Settings
+modules/apps/frontend-js,Clay
+modules/apps/layout,Page Templates
+modules/apps/fragment,Out of the box Fragments
+modules/apps/accessibility,Accessibility Framework
+modules/apps/frontend-js,JS APIs and Utilities
+modules/apps/headless,Headless Delivery API
+modules/apps/ai/ai-hub-web,AI Hub
+modules/apps/site-initializer/site-initializer-extender,Site Management > Site Initializer
+modules/apps/headless/headless-admin-site/headless-admin-site-impl/src/main,Headless Site API
+modules/apps/headless/headless-admin-site/headless-admin-site-client/src/main,Headless Site API
+modules/apps/portal-search-elasticsearch8/portal-search-elasticsearch8-impl/src/main,Search Infrastructure > Elasticsearch Connector
+

@@ -1,0 +1,491 @@
+# =============================================================================
+# releases.yml — Release Registry
+# =============================================================================
+#
+# HOW TO ADD A NEW RELEASE:
+#   1. Copy one of the blocks below (everything from "- label:" to the last field)
+#   2. Paste it at the bottom of the list
+#   3. Fill in the fields (see field guide below)
+#   4. Save the file and notify your engineer to run sync_releases.R
+#      (or run it yourself if you have RStudio access)
+#
+# FIELD GUIDE:
+#
+#   label           The release identifier. Use the internal tag for milestones
+#                   (U147, U148) or the quarter label for GA releases (2024.Q1).
+#                   Must be unique. Never change a label after it's been synced.
+#
+#   quarter_label   The quarter this release belongs to (e.g. 2024.Q1, 2026.Q2).
+#                   For quarterly GA releases this is the same as label.
+#                   For internal milestones (U1xx) this is the parent quarter.
+#
+#   git_tag         The git release tag for this release.
+#                   Example: 7.4.13-u110  or  2024.q1.1
+#                   Ask your engineer if you're not sure.
+#                   For in-development releases, leave blank until the tag is cut.
+#
+#   release_date    The date the release shipped. Leave blank until it ships.
+#                   Format: YYYY-MM-DD  (example: 2026-03-15)
+#
+#   is_major_release  true  = external quarterly GA release (Q1/Q2/Q3/Q4)
+#                     false = internal milestone only (U1xx)
+#
+#   is_lts            true  = Q1 Long Term Support release — customers stay on these
+#                             longer so bug counts accumulate over a longer window
+#                     false = standard quarterly or internal release
+#
+#   status          One of three values — update as the release progresses:
+#                     IN_DEVELOPMENT  → branch not yet cut, churn is partial
+#                     BRANCH_CUT      → branch cut, git_tag is set
+#                     RELEASED        → shipped, release_date is set
+#
+#   notes           Optional. Anything useful for context (theme, scope, etc.)
+#
+# =============================================================================
+
+releases:
+
+  # ---------------------------------------------------------------------------
+  # 2024.Q1
+  # ---------------------------------------------------------------------------
+
+  - label:            "U110"
+    quarter_label:    "2024.Q1"
+    git_tag:          "7.4.13-u110"
+    release_date:     "2024-01-22"
+    is_major_release: false
+    is_lts:           false
+    status:           RELEASED
+    notes:            ""
+
+  - label:            "U111"
+    quarter_label:    "2024.Q1"
+    git_tag:          "7.4.13-u111"
+    release_date:     "2024-02-05"
+    is_major_release: false
+    is_lts:           false
+    status:           RELEASED
+    notes:            ""
+
+  - label:            "U112"
+    quarter_label:    "2024.Q1"
+    git_tag:          "7.4.13-u112"
+    release_date:     "2024-02-26"
+    is_major_release: false
+    is_lts:           false
+    status:           RELEASED
+    notes:            "Promoted to 2024.Q1 release"
+
+  - label:            "2024.Q1"
+    quarter_label:    "2024.Q1"
+    git_tag:          "2024.q1.1"
+    release_date:     "2024-03-12"
+    is_major_release: true
+    is_lts:           true
+    status:           RELEASED
+    notes:            ""
+
+  # ---------------------------------------------------------------------------
+  # 2024.Q2
+  # ---------------------------------------------------------------------------
+
+  - label:            "U113"
+    quarter_label:    "2024.Q2"
+    git_tag:          "7.4.13-u113"
+    release_date:     "2024-03-13"
+    is_major_release: false
+    is_lts:           false
+    status:           RELEASED
+    notes:            ""
+
+  - label:            "U114"
+    quarter_label:    "2024.Q2"
+    git_tag:          "7.4.13-u114"
+    release_date:     "2024-03-25"
+    is_major_release: false
+    is_lts:           false
+    status:           RELEASED
+    notes:            ""
+
+  - label:            "U116"
+    quarter_label:    "2024.Q2"
+    git_tag:          "7.4.13-u116"
+    release_date:     "2024-04-09"
+    is_major_release: false
+    is_lts:           false
+    status:           RELEASED
+    notes:            ""
+
+  - label:            "U118"
+    quarter_label:    "2024.Q2"
+    git_tag:          "7.4.13-u118"
+    release_date:     "2024-04-22"
+    is_major_release: false
+    is_lts:           false
+    status:           RELEASED
+    notes:            ""
+
+  - label:            "U120"
+    quarter_label:    "2024.Q2"
+    git_tag:          "7.4.13-u120"
+    release_date:     "2024-05-16"
+    is_major_release: false
+    is_lts:           false
+    status:           RELEASED
+    notes:            "Promoted to 2024.Q2 release"
+
+  - label:            "2024.Q2"
+    quarter_label:    "2024.Q2"
+    git_tag:          "2024.q2.0"
+    release_date:     "2024-06-07"
+    is_major_release: true
+    is_lts:           false
+    status:           RELEASED
+    notes:            ""
+
+  # ---------------------------------------------------------------------------
+  # 2024.Q3
+  # ---------------------------------------------------------------------------
+
+  - label:            "U121"
+    quarter_label:    "2024.Q3"
+    git_tag:          "7.4.13-u121"
+    release_date:     "2024-05-29"
+    is_major_release: false
+    is_lts:           false
+    status:           RELEASED
+    notes:            ""
+
+  - label:            "U122"
+    quarter_label:    "2024.Q3"
+    git_tag:          "7.4.13-u122"
+    release_date:     "2024-06-14"
+    is_major_release: false
+    is_lts:           false
+    status:           RELEASED
+    notes:            ""
+
+  - label:            "U123"
+    quarter_label:    "2024.Q3"
+    git_tag:          "7.4.13-u123"
+    release_date:     "2024-06-27"
+    is_major_release: false
+    is_lts:           false
+    status:           RELEASED
+    notes:            ""
+
+  - label:            "U124"
+    quarter_label:    "2024.Q3"
+    git_tag:          "7.4.13-u124"
+    release_date:     "2024-07-15"
+    is_major_release: false
+    is_lts:           false
+    status:           RELEASED
+    notes:            ""
+
+  - label:            "U125"
+    quarter_label:    "2024.Q3"
+    git_tag:          "7.4.13-u125"
+    release_date:     "2024-08-05"
+    is_major_release: false
+    is_lts:           false
+    status:           RELEASED
+    notes:            "Promoted to 2024.Q3 release"
+
+  - label:            "2024.Q3"
+    quarter_label:    "2024.Q3"
+    git_tag:          "2024.q3.0"
+    release_date:     "2024-09-06"
+    is_major_release: true
+    is_lts:           false
+    status:           RELEASED
+    notes:            ""
+
+  # ---------------------------------------------------------------------------
+  # 2024.Q4
+  # ---------------------------------------------------------------------------
+
+  - label:            "U126"
+    quarter_label:    "2024.Q4"
+    git_tag:          "7.4.13-u126"
+    release_date:     "2024-08-25"
+    is_major_release: false
+    is_lts:           false
+    status:           RELEASED
+    notes:            ""
+
+  - label:            "U127"
+    quarter_label:    "2024.Q4"
+    git_tag:          "7.4.13-u127"
+    release_date:     "2024-09-25"
+    is_major_release: false
+    is_lts:           false
+    status:           RELEASED
+    notes:            ""
+
+  - label:            "U128"
+    quarter_label:    "2024.Q4"
+    git_tag:          "7.4.13-u128"
+    release_date:     "2024-10-18"
+    is_major_release: false
+    is_lts:           false
+    status:           RELEASED
+    notes:            ""
+
+  - label:            "U129"
+    quarter_label:    "2024.Q4"
+    git_tag:          "7.4.13-u129"
+    release_date:     "2024-11-07"
+    is_major_release: false
+    is_lts:           false
+    status:           RELEASED
+    notes:            "Promoted to 2024.Q4 release"
+
+  - label:            "2024.Q4"
+    quarter_label:    "2024.Q4"
+    git_tag:          "2024.q4.0"
+    release_date:     "2024-12-09"
+    is_major_release: true
+    is_lts:           false
+    status:           RELEASED
+    notes:            ""
+
+  # ---------------------------------------------------------------------------
+  # 2025.Q1
+  # ---------------------------------------------------------------------------
+
+  - label:            "U130"
+    quarter_label:    "2025.Q1"
+    git_tag:          "7.4.13-u130"
+    release_date:     "2024-12-02"
+    is_major_release: false
+    is_lts:           false
+    status:           RELEASED
+    notes:            ""
+
+  - label:            "U131"
+    quarter_label:    "2025.Q1"
+    git_tag:          "7.4.13-u131"
+    release_date:     "2024-12-18"
+    is_major_release: false
+    is_lts:           false
+    status:           RELEASED
+    notes:            ""
+
+  - label:            "U132"
+    quarter_label:    "2025.Q1"
+    git_tag:          "7.4.13-u132"
+    release_date:     "2025-02-07"
+    is_major_release: false
+    is_lts:           false
+    status:           RELEASED
+    notes:            "Promoted to 2025.Q1 release"
+
+  - label:            "2025.Q1"
+    quarter_label:    "2025.Q1"
+    git_tag:          "2025.q1.0"
+    release_date:     "2025-02-17"
+    is_major_release: true
+    is_lts:           true
+    status:           RELEASED
+    notes:            ""
+
+  # ---------------------------------------------------------------------------
+  # 2025.Q2
+  # ---------------------------------------------------------------------------
+
+  - label:            "U133"
+    quarter_label:    "2025.Q2"
+    git_tag:          "7.4.13-u133"
+    release_date:     "2025-03-18"
+    is_major_release: false
+    is_lts:           false
+    status:           RELEASED
+    notes:            ""
+
+  - label:            "U134"
+    quarter_label:    "2025.Q2"
+    git_tag:          "7.4.13-u134"
+    release_date:     "2025-04-23"
+    is_major_release: false
+    is_lts:           false
+    status:           RELEASED
+    notes:            ""
+
+  - label:            "U135"
+    quarter_label:    "2025.Q2"
+    git_tag:          "7.4.13-u135"
+    release_date:     "2025-05-19"
+    is_major_release: false
+    is_lts:           false
+    status:           RELEASED
+    notes:            "Promoted to 2025.Q2 release"
+
+  - label:            "2025.Q2"
+    quarter_label:    "2025.Q2"
+    git_tag:          "2025.q2.0"
+    release_date:     "2025-05-22"
+    is_major_release: true
+    is_lts:           false
+    status:           RELEASED
+    notes:            ""
+
+  # ---------------------------------------------------------------------------
+  # 2025.Q3
+  # ---------------------------------------------------------------------------
+
+  - label:            "U136"
+    quarter_label:    "2025.Q3"
+    git_tag:          "7.4.13-u136"
+    release_date:     "2025-06-16"
+    is_major_release: false
+    is_lts:           false
+    status:           RELEASED
+    notes:            ""
+
+  - label:            "U137"
+    quarter_label:    "2025.Q3"
+    git_tag:          "7.4.13-u137"
+    release_date:     "2025-07-24"
+    is_major_release: false
+    is_lts:           false
+    status:           RELEASED
+    notes:            ""
+
+  - label:            "U138"
+    quarter_label:    "2025.Q3"
+    git_tag:          "7.4.13-u138"
+    release_date:     "2025-08-08"
+    is_major_release: false
+    is_lts:           false
+    status:           RELEASED
+    notes:            "Promoted to 2025.Q3 release"
+
+  - label:            "2025.Q3"
+    quarter_label:    "2025.Q3"
+    git_tag:          "2025.q3.0"
+    release_date:     "2025-08-26"
+    is_major_release: true
+    is_lts:           false
+    status:           RELEASED
+    notes:            ""
+
+  # ---------------------------------------------------------------------------
+  # 2025.Q4
+  # ---------------------------------------------------------------------------
+
+  - label:            "U139"
+    quarter_label:    "2025.Q4"
+    git_tag:          "7.4.13-u139"
+    release_date:     "2025-08-29"
+    is_major_release: false
+    is_lts:           false
+    status:           RELEASED
+    notes:            ""
+
+  - label:            "U140"
+    quarter_label:    "2025.Q4"
+    git_tag:          "7.4.13-u140"
+    release_date:     "2025-09-11"
+    is_major_release: false
+    is_lts:           false
+    status:           RELEASED
+    notes:            ""
+
+  - label:            "U141"
+    quarter_label:    "2025.Q4"
+    git_tag:          "7.4.13-u141"
+    release_date:     "2025-09-26"
+    is_major_release: false
+    is_lts:           false
+    status:           RELEASED
+    notes:            ""
+
+  - label:            "U142"
+    quarter_label:    "2025.Q4"
+    git_tag:          "7.4.13-u142"
+    release_date:     "2025-10-23"
+    is_major_release: false
+    is_lts:           false
+    status:           RELEASED
+    notes:            ""
+
+  - label:            "U143"
+    quarter_label:    "2025.Q4"
+    git_tag:          "7.4.13-u143"
+    release_date:     "2025-11-13"
+    is_major_release: false
+    is_lts:           false
+    status:           RELEASED
+    notes:            "Promoted to 2025.Q4 release"
+
+  - label:            "2025.Q4"
+    quarter_label:    "2025.Q4"
+    git_tag:          "2025.q4.0"
+    release_date:     "2025-11-21"
+    is_major_release: true
+    is_lts:           false
+    status:           RELEASED
+    notes:            ""
+
+  # ---------------------------------------------------------------------------
+  # 2026.Q1 — Active
+  # ---------------------------------------------------------------------------
+
+  - label:            "U144"
+    quarter_label:    "2026.Q1"
+    git_tag:          "7.4.13-u144"
+    release_date:     "2025-12-05"
+    is_major_release: false
+    is_lts:           false
+    status:           RELEASED
+    notes:            ""
+
+  - label:            "U145"
+    quarter_label:    "2026.Q1"
+    git_tag:          "7.4.13-u145"
+    release_date:     "2025-12-19"
+    is_major_release: false
+    is_lts:           false
+    status:           RELEASED
+    notes:            ""
+
+  - label:            "U146"
+    quarter_label:    "2026.Q1"
+    git_tag:          "7.4.13-u146"
+    release_date:     "2026-01-30"
+    is_major_release: false
+    is_lts:           false
+    status:           RELEASED
+    notes:            ""
+
+  - label:            "U147"
+    quarter_label:    "2026.Q1"
+    git_tag:          "7.4.13-u147"
+    release_date:     "2026-03-16"
+    is_major_release: false
+    is_lts:           false
+    status:           IN_DEVELOPMENT
+    notes:            "Promoted to 2026.Q1 release"
+
+  - label:            "2026.Q1"
+    quarter_label:    "2026.Q1"
+    git_tag:          "2026.q1.0"
+    release_date:     "2026-03-18"
+    is_major_release: true
+    is_lts:           true
+    status:           IN_DEVELOPMENT
+    notes:            ""
+
+  # ---------------------------------------------------------------------------
+  # TEMPLATE — copy this block to add a new release
+  # ---------------------------------------------------------------------------
+  #
+  # - label:            ""
+  #   quarter_label:    ""
+  #   git_tag:          ""
+  #   release_date:
+  #   is_major_release: false
+  #   is_lts:           false
+  #   status:           IN_DEVELOPMENT
+  #   notes:            ""

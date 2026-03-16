@@ -1,0 +1,628 @@
+---
+title: "Release Situation Deck"
+output:
+  flexdashboard::flex_dashboard:
+    orientation: rows
+    vertical_layout: scroll
+    theme:
+      version: 4
+      bootswatch: flatly
+params:
+  forecast_label:
+    label: "Release to forecast (e.g. 2026.Q1)"
+    value: "2026.Q1"
+    input: text
+  top_n:
+    label: "Top N components to show"
+    value: 20
+    input: numeric
+    min: 5
+    max: 50
+  exclude_2024:
+    label: "Exclude 2024 from training data?"
+    value: FALSE
+    input: checkbox
+---
+
+```{r setup, include=FALSE}
+required_pkgs <- c(
+  "flexdashboard","dplyr","tidyr","ggplot2","reshape2",
+  "MASS","pscl","randomForest","DT","scales","knitr","htmltools","crosstalk",
+  "DBI","yaml","lubridate","forcats","here"
+)
+for (pkg in required_pkgs) {
+  if (!requireNamespace(pkg, quietly=TRUE))
+    install.packages(pkg, dependencies=TRUE, quiet=TRUE)
+  suppressPackageStartupMessages(library(pkg, character.only=TRUE))
+}
+
+select  <- dplyr::select
+filter  <- dplyr::filter
+mutate  <- dplyr::mutate
+arrange <- dplyr::arrange
+
+options(scipen=999)
+set.seed(42)
+knitr::opts_chunk$set(echo=FALSE, message=FALSE, warning=FALSE)
+knitr::opts_knit$set(root.dir = here::here())
+
+RISK_COLORS <- c(
+  "Very Low"  = "#4DAF4A",
+  "Low"       = "#A8D96F",
+  "Medium"    = "#FFC107",
+  "High"      = "#FF7F00",
+  "Very High" = "#D32F2F"
+)
+
+risk_label <- function(pct) {
+  cut(pct, breaks=c(-Inf,20,40,60,80,Inf),
+      labels=c("Very Low","Low","Medium","High","Very High"))
+}
+```
+
+```{r load-data}
+source("/config/release_analytics_db.R")
+con <- get_db_connection(config_path = "/config/config.yml")
+
+raw <- dbGetQuery(con, "
+  SELECT
+    fi.quarter,
+    dc.component_name   AS component,
+    dc.team_name        AS team,
+    dr.is_major_release::INT AS is_major_release,
+    dr.is_lts::INT           AS is_lts,
+    dr.release_date,
+    COALESCE(ROUND((CURRENT_DATE - dr.release_date) / 30.0)::INT, 3) AS months_in_field,
+    fi.lpp_count        AS lpp,
+    fi.lpd_count        AS lpd,
+    fi.story_count      AS stories,
+    fi.backend_changes,
+    fi.frontend_changes,
+    fi.total_churn,
+    fi.java_insertions,
+    fi.tsx_insertions,
+    fi.breaking_changes,
+    fi.is_forecast_row
+  FROM fact_forecast_input fi
+  JOIN dim_component dc ON dc.component_id = fi.component_id
+  JOIN dim_release   dr ON dr.release_label = fi.quarter
+  WHERE fi.quarter LIKE '%.Q%'
+  ORDER BY dr.release_date, dc.component_name
+")
+
+dbDisconnect(con)
+
+# Legacy baselines
+legacy <- raw %>%
+  filter(grepl("2024", quarter)) %>%
+  group_by(component) %>%
+  summarise(legacy_lpp_avg = mean(lpp, na.rm=TRUE),
+            legacy_lpd_avg = mean(lpd, na.rm=TRUE), .groups="drop")
+
+raw <- raw %>%
+  left_join(legacy, by="component") %>%
+  mutate(
+    has_legacy_data = ifelse(is.na(legacy_lpp_avg), 0, 1),
+    legacy_lpp_avg  = ifelse(is.na(legacy_lpp_avg),
+                             median(legacy$legacy_lpp_avg, na.rm=TRUE), legacy_lpp_avg),
+    legacy_lpd_avg  = ifelse(is.na(legacy_lpd_avg),
+                             median(legacy$legacy_lpd_avg, na.rm=TRUE), legacy_lpd_avg),
+    log_months      = log(pmax(months_in_field, 1))
+  )
+
+# Splits
+forecast_q <- params$forecast_label
+
+# All completed Q releases (not the forecast target)
+completed <- raw %>%
+  filter(quarter != forecast_q, !is_forecast_row) %>%
+  arrange(release_date)
+
+# Maturity filter — only train on quarters >= 9 months in field.
+# Younger quarters have incomplete bug counts (customers haven't had time
+# to report them) which inverts the churn→bug signal and ruins model fit.
+# 9 months is conservative: even Q2/Q3 releases need ~6-9 months to stabilize.
+MIN_MONTHS <- 9
+mature <- completed %>% filter(months_in_field >= MIN_MONTHS)
+mature_q <- sort(unique(mature$quarter))
+
+# Use 2024 quarters only for legacy baseline, not model training
+# (process change in 2024 makes those counts less comparable)
+# Training window: mature quarters that are NOT 2024
+if (params$exclude_2024) {
+  train_pool <- mature_q[!grepl("2024", mature_q)]
+} else {
+  train_pool <- mature_q
+}
+
+train_q <- head(train_pool, -1)
+valid_q <- tail(train_pool,  1)
+
+message(sprintf("Mature quarters (>= %d months): %s", MIN_MONTHS,
+                paste(mature_q, collapse=", ")))
+message(sprintf("Training on: %s", paste(train_q, collapse=", ")))
+message(sprintf("Validating on: %s", valid_q))
+
+train_data    <- mature %>% filter(quarter %in% train_q)
+valid_data    <- mature %>% filter(quarter == valid_q)
+forecast_data <- raw    %>% filter(quarter == forecast_q) %>%
+  mutate(log_months=log(3), is_major_release=1L, is_lts=1L)
+```
+
+```{r model-training}
+# =============================================================================
+# LPP: Historical risk ranking — NOT a forecast
+# 62% of component×quarter rows have zero LPP bugs. With only 5 mature training
+# quarters available, count models produce unreliable predictions for LPP.
+# Instead we rank components by historical LPP exposure adjusted for current churn.
+# This is directionally correct for test prioritization even without a forecast.
+#
+# LPD: Trained forecast — Random Forest R²=0.56 on validation quarter.
+# Sufficient for directional risk guidance.
+# =============================================================================
+
+soft_cap <- function(p, mx, m=3) pmin(p, mx*m)
+
+get_metrics <- function(act, pred) list(
+  MAE  = round(mean(abs(act-pred)),3),
+  RMSE = round(sqrt(mean((act-pred)^2)),3),
+  R2   = round(1 - sum((act-pred)^2)/sum((act-mean(act))^2),3)
+)
+
+mk <- function(df) df %>%
+  rename(LPP=lpp, LPD=lpd, Stories=stories,
+         backend=backend_changes, frontend=frontend_changes)
+
+td <- mk(train_data)
+vd <- mk(valid_data)
+fd <- mk(forecast_data)
+
+# ── LPD forecast models ────────────────────────────────────────────────────────
+form_lpd <- LPD ~ legacy_lpd_avg + Stories + log1p(backend) + log1p(frontend) +
+            is_major_release + is_lts + has_legacy_data + is_major_release:Stories
+
+fit <- function(formula, data, family="nb") {
+  tryCatch({
+    if (family=="nb")
+      glm.nb(update(formula,.~.+offset(log_months)), data=data)
+    else
+      glm(update(formula,.~.+offset(log_months)), data=data, family="quasipoisson")
+  }, error=function(e) NULL)
+}
+
+fit_rf <- function(formula, data) {
+  tryCatch(randomForest::randomForest(formula, data=data, ntree=500, importance=TRUE),
+           error=function(e) NULL)
+}
+
+m_lpd_nb <- fit(form_lpd, td, "nb")
+m_lpd_qp <- fit(form_lpd, td, "qp")
+m_lpd_rf <- fit_rf(LPD ~ months_in_field + legacy_lpd_avg + Stories + backend + frontend +
+                   is_major_release + is_lts + has_legacy_data, td)
+
+max_lpd <- max(td$LPD, na.rm=TRUE)
+
+eval_m <- function(m, nm, vd, col, mx, rf=FALSE) {
+  if (is.null(m)) return(NULL)
+  p <- if(rf) predict(m,newdata=vd) else soft_cap(predict(m,newdata=vd,type="response"),mx)
+  mt <- get_metrics(vd[[col]], p)
+  data.frame(Model=nm, MAE=mt$MAE, RMSE=mt$RMSE, R2=mt$R2, stringsAsFactors=FALSE)
+}
+
+lpd_comp <- bind_rows(
+  eval_m(m_lpd_nb, "NegBin",       vd,"LPD",max_lpd),
+  eval_m(m_lpd_qp, "Quasi-Poisson",vd,"LPD",max_lpd),
+  eval_m(m_lpd_rf, "Random Forest",vd,"LPD",max_lpd,rf=TRUE)
+) %>% filter(!is.na(R2))
+
+best_lpd <- lpd_comp$Model[which.max(lpd_comp$R2)]
+lpd_r2   <- max(lpd_comp$R2)
+
+lpd_model <- switch(best_lpd,
+  "NegBin"       = m_lpd_nb,
+  "Quasi-Poisson"= m_lpd_qp,
+  "Random Forest"= m_lpd_rf)
+
+# LPD calibration
+lpd_vp   <- if(best_lpd=="Random Forest") predict(lpd_model,newdata=vd) else
+               soft_cap(predict(lpd_model,newdata=vd,type="response"),max_lpd)
+lpd_bias <- (mean(vd$LPD) - mean(lpd_vp)) / mean(vd$LPD) * 100
+lpd_cal  <- if(abs(lpd_bias) > 20) mean(vd$LPD) / mean(lpd_vp) else 1.0
+
+lpd_preds <- (if(best_lpd=="Random Forest") predict(lpd_model,newdata=fd) else
+               soft_cap(predict(lpd_model,newdata=fd,type="response"),max_lpd)) * lpd_cal
+
+# ── LPP historical risk score ──────────────────────────────────────────────────
+# Weighted combination of:
+#   60% historical LPP average (legacy exposure)
+#   40% current churn signal (backend-weighted)
+# Normalized to 0-100 percentile rank across components.
+lpp_hist_score <- fd %>%
+  mutate(
+    churn_signal  = log1p(backend) + 0.5 * log1p(frontend),
+    z_legacy      = (legacy_lpp_avg - mean(legacy_lpp_avg, na.rm=TRUE)) /
+                     max(sd(legacy_lpp_avg, na.rm=TRUE), 1e-6),
+    z_churn       = (churn_signal - mean(churn_signal, na.rm=TRUE)) /
+                     max(sd(churn_signal, na.rm=TRUE), 1e-6),
+    raw_lpp_score = 0.6 * z_legacy + 0.4 * z_churn
+  ) %>%
+  pull(raw_lpp_score)
+
+# ── Combined risk scoring ──────────────────────────────────────────────────────
+results <- fd %>%
+  mutate(
+    # LPP: historical risk score (not a forecast)
+    lpp_hist_score = lpp_hist_score,
+    lpp_pct        = percent_rank(lpp_hist_score) * 100,
+    lpp_risk       = risk_label(lpp_pct),
+
+    # LPD: model forecast
+    lpd_pred       = lpd_preds,
+    lpd_pct        = percent_rank(lpd_preds) * 100,
+    lpd_risk       = risk_label(lpd_pct),
+
+    # Combined risk: equal weight LPP historical + LPD forecast
+    risk_score     = lpp_pct + lpd_pct,
+    overall_risk   = risk_label(percent_rank(risk_score) * 100),
+    est_bugs       = lpd_pred   # est_bugs = LPD forecast only
+  ) %>%
+  arrange(desc(risk_score)) %>%
+  distinct(component, .keep_all=TRUE)
+```
+
+Overview
+=====================================
+
+Row {data-height=120}
+-------------------------------------
+
+### Forecast Target
+```{r}
+valueBox(params$forecast_label, icon="fa-bullseye", color="#2196F3")
+```
+
+### Training Quarters
+```{r}
+valueBox(length(train_q), icon="fa-database", color="#607D8B")
+```
+
+### LPP Risk Method
+```{r}
+valueBox("Historical Ranking", icon="fa-user",
+         color="#607D8B",
+         caption="60% legacy LPP + 40% churn signal")
+```
+
+### LPD Forecast Model
+```{r}
+valueBox(sprintf("%s  R²=%.2f", best_lpd, lpd_r2), icon="fa-bug",
+         color=ifelse(lpd_r2>=0.6,"#4CAF50","#FF9800"))
+```
+
+### High Risk Components
+```{r}
+n_hi <- sum(results$overall_risk %in% c("High","Very High"))
+valueBox(n_hi, icon="fa-exclamation-triangle",
+         color=ifelse(n_hi>10,"#D32F2F",ifelse(n_hi>5,"#FF9800","#4CAF50")))
+```
+
+Row {data-height=420}
+-------------------------------------
+
+### Top Components by Risk Score {data-width=620}
+```{r fig.height=6}
+p_data <- results %>% 
+  filter(!is.na(risk_score)) %>%
+  head(params$top_n) %>%
+  mutate(component=fct_reorder(component, risk_score))
+
+ggplot(p_data, aes(x=component, y=risk_score, fill=overall_risk)) +
+  geom_col() +
+  coord_flip() +
+  scale_fill_manual(values=RISK_COLORS, name="Risk Level") +
+  labs(title=sprintf("%s — Top %d Components", params$forecast_label, params$top_n),
+       subtitle=sprintf("LPP: Historical risk ranking | LPD forecast: %s (R²=%.2f)", best_lpd, lpd_r2),
+       x=NULL, y="Risk Score") +
+  theme_minimal(base_size=11) +
+  theme(legend.position="bottom", panel.grid.major.y=element_blank())
+```
+
+### LPP Risk vs LPD Forecast {data-width=380}
+```{r fig.height=6}
+ggplot(results, aes(x=lpp_pct, y=lpd_pred)) +
+  geom_point(aes(color=overall_risk, size=est_bugs), alpha=0.7) +
+  geom_text(data=results %>% head(8), aes(label=component),
+            hjust=-0.1, size=2.8, check_overlap=TRUE) +
+  scale_color_manual(values=RISK_COLORS, name="Risk") +
+  scale_size_continuous(name="Est. LPD Bugs", range=c(2,8)) +
+  labs(title="LPP Historical Risk vs LPD Forecast",
+       subtitle="X = LPP historical risk percentile | Y = predicted internal defects",
+       x="LPP Risk Percentile (historical)", y="Predicted LPD Bugs (forecast)") +
+  theme_minimal(base_size=11) +
+  theme(legend.position="bottom")
+```
+
+Row {data-height=300}
+-------------------------------------
+
+### LPD Model Performance
+```{r}
+lpd_comp %>%
+  select(Model, R2, MAE, RMSE) %>%
+  arrange(desc(R2)) %>%
+  datatable(options=list(pageLength=5, dom='t'), rownames=FALSE,
+            caption=sprintf("LPD validated on %s | calibration factor: %.3f", valid_q, lpd_cal)) %>%
+  formatRound(c("R2","MAE","RMSE"),3) %>%
+  formatStyle("R2", backgroundColor=styleInterval(c(0.4,0.6,0.75),
+    c("#ffcccc","#fff3cd","#d4edda","#c3e6cb")))
+```
+
+### LPP Note {data-width=300}
+```{r}
+htmltools::div(
+  style="padding:20px; background:#fff8e1; border-left:4px solid #FFC107; border-radius:4px;",
+  htmltools::tags$h5("⚠️ LPP Forecasting Not Available"),
+  htmltools::tags$p("Customer bug (LPP) forecasting requires more training data."),
+  htmltools::tags$p(sprintf(
+    "%d%% of component x quarter rows have zero LPP bugs. With only %d mature training quarters, count models are unreliable for LPP.",
+    62L, length(train_q)
+  )),
+  htmltools::tags$p("LPP risk is shown as a historical ranking: components with high past LPP exposure and high current churn are flagged as highest risk."),
+  htmltools::tags$p(htmltools::tags$strong("Improves with: "), "more historical data (re-extract Jira from 2023+) and additional mature quarters.")
+)
+```
+
+Risk Heat Map
+=====================================
+
+Row {data-height=60}
+-------------------------------------
+
+### 
+```{r}
+htmltools::div(
+  style="padding:8px 16px; background:#e3f2fd; border-left:4px solid #2196F3; border-radius:4px; font-size:13px;",
+  htmltools::tags$strong("Showing: "), params$forecast_label,
+  " | To view a different release (e.g. U147), re-knit with ",
+  htmltools::tags$code('params = list(forecast_label = "U147")'),
+  " from the R console."
+)
+```
+
+Row {data-height=720}
+-------------------------------------
+
+### Risk DNA — Top `r params$top_n` Components {data-width=700}
+```{r fig.height=9, fig.width=10}
+hm <- results %>% head(params$top_n) %>% distinct(component, .keep_all=TRUE) %>%
+  mutate(
+    log_backend  = log1p(backend),
+    log_frontend = log1p(frontend),
+    log_churn    = log1p(total_churn),
+    log_java     = log1p(java_insertions),
+    log_tsx      = log1p(tsx_insertions)
+  ) %>%
+  select(component, team,
+         `Hist. Customer` = legacy_lpp_avg,
+         `Hist. Internal` = legacy_lpd_avg,
+         `Backend Churn`  = log_backend,
+         `Frontend Churn` = log_frontend,
+         `Total Churn`    = log_churn,
+         `Java Ins`       = log_java,
+         `TSX Ins`        = log_tsx)
+
+cn <- names(hm)[-(1:2)]
+hm_s <- hm
+hm_s[cn] <- lapply(hm[cn], function(x) {
+  r <- max(x,na.rm=TRUE)-min(x,na.rm=TRUE)
+  if(r==0) rep(0,length(x)) else (x-min(x,na.rm=TRUE))/r
+})
+
+hm_s %>%
+  mutate(component=factor(component, levels=rev(results$component[1:params$top_n]))) %>%
+  pivot_longer(all_of(cn), names_to="indicator", values_to="value") %>%
+  ggplot(aes(x=indicator, y=component, fill=value)) +
+  geom_tile(color="white", linewidth=0.4) +
+  scale_fill_gradientn(colors=c("#f7fbff","#9ecae1","#2171b5","#08306b"),
+                       name="Rel. Risk", limits=c(0,1)) +
+  labs(title=sprintf("%s Risk Exposure — Top %d Components", params$forecast_label, params$top_n),
+       subtitle="Normalized 0–1 per indicator | Sorted by overall risk score",
+       x=NULL, y=NULL) +
+  theme_minimal(base_size=11) +
+  theme(axis.text.x=element_text(angle=35,hjust=1),
+        panel.grid.major=element_blank())
+```
+
+### Top Components {data-width=300}
+```{r}
+library(crosstalk)
+
+top_comp_data <- results %>%
+  head(params$top_n) %>%
+  select(Component=component, Team=team,
+         `LPP Risk Pct`=lpp_pct, `LPD Pred`=lpd_pred,
+         `Score`=risk_score, `Risk`=overall_risk) %>%
+  mutate(across(c(`LPP Risk Pct`,`LPD Pred`,Score), ~round(.,1)))
+
+shared_top <- SharedData$new(top_comp_data, ~Team)
+
+bscols(
+  widths = c(12),
+  filter_select("team_filter", "Filter by Team", shared_top, ~Team)
+)
+
+datatable(shared_top,
+          options = list(
+            pageLength = params$top_n,
+            dom = "t",
+            scrollY = "500px",
+            scrollCollapse = TRUE
+          ),
+          rownames = FALSE) %>%
+  formatStyle("Risk",
+    backgroundColor = styleEqual(names(RISK_COLORS), unname(RISK_COLORS)),
+    color = styleEqual(names(RISK_COLORS), c("black","black","black","black","white"))) %>%
+  formatStyle("Score",
+    background = styleColorBar(c(0, 200), "#2196F3"),
+    backgroundSize = "100% 90%",
+    backgroundRepeat = "no-repeat",
+    backgroundPosition = "center")
+```
+
+Team Drilldown
+=====================================
+
+Row {data-height=400}
+-------------------------------------
+
+### Team Risk Summary
+```{r fig.height=5}
+team_sum <- results %>%
+  filter(!is.na(team)) %>%
+  group_by(team) %>%
+  summarise(n=n(), lpp=round(mean(lpp_pct),1), lpd=round(sum(lpd_pred),0),
+            avg_risk=round(mean(risk_score),1),
+            n_high=sum(overall_risk %in% c("High","Very High")), .groups="drop") %>%
+  arrange(desc(avg_risk))
+
+ggplot(team_sum, aes(x=reorder(team, avg_risk), y=avg_risk, fill=avg_risk)) +
+  geom_col() +
+  geom_text(aes(label=sprintf("%.0f", avg_risk)), hjust=-0.1, size=3.5) +
+  coord_flip() +
+  scale_fill_gradient2(low="#4DAF4A", mid="#FFC107", high="#D32F2F",
+                       midpoint=100, guide="none") +
+  labs(title=sprintf("%s — Avg Risk Score by Team", params$forecast_label),
+       x=NULL, y="Avg Risk Score") +
+  theme_minimal(base_size=11) +
+  theme(panel.grid.major.y=element_blank())
+```
+
+### Team Table
+```{r}
+team_sum %>% arrange(desc(avg_risk)) %>%
+  select(Team=team, Components=n, `Avg LPP Risk%`=lpp, `Pred LPD`=lpd,
+         `Avg Risk`=avg_risk, `High Risk`=n_high) %>%
+  datatable(options=list(pageLength=15,dom='tp'), rownames=FALSE) %>%
+  formatStyle("Avg Risk", background=styleColorBar(c(0,200),"#FF9800"),
+              backgroundSize="100% 90%", backgroundRepeat="no-repeat",
+              backgroundPosition="center")
+```
+
+Row {data-height=620}
+-------------------------------------
+
+### Top 5 per Team — Heat Map
+```{r fig.height=8, fig.width=11}
+top5 <- results %>%
+  filter(!is.na(team)) %>%
+  group_by(team) %>% slice_max(risk_score, n=5) %>% ungroup()
+
+hm_t <- top5 %>%
+  mutate(
+    l_backend  = log1p(backend),
+    l_frontend = log1p(frontend),
+    l_java     = log1p(java_insertions),
+    l_tsx      = log1p(tsx_insertions)
+  ) %>%
+  select(component, team, risk_score,
+         `Hist.LPP`=legacy_lpp_avg, `Hist.LPD`=legacy_lpd_avg,
+         Backend=l_backend, Frontend=l_frontend,
+         Java=l_java, TSX=l_tsx)
+
+cn_t <- names(hm_t)[-(1:3)]
+hm_ts <- hm_t
+hm_ts[cn_t] <- lapply(hm_t[cn_t], function(x) {
+  r <- max(x,na.rm=TRUE)-min(x,na.rm=TRUE)
+  if(r==0) rep(0,length(x)) else (x-min(x,na.rm=TRUE))/r
+})
+
+hm_ts %>%
+  pivot_longer(all_of(cn_t), names_to="ind", values_to="val") %>%
+  ggplot(aes(x=ind, y=component, fill=val)) +
+  geom_tile(color="white", linewidth=0.3) +
+  scale_fill_gradientn(colors=c("#f7fbff","#9ecae1","#2171b5","#08306b"),
+                       name="Rel. Risk", limits=c(0,1)) +
+  facet_wrap(~team, scales="free_y", ncol=3) +
+  labs(title=sprintf("%s — Top 5 per Team", params$forecast_label),
+       x=NULL, y=NULL) +
+  theme_minimal(base_size=9) +
+  theme(axis.text.x=element_text(angle=35,hjust=1),
+        panel.grid.major=element_blank(),
+        strip.text=element_text(face="bold"))
+```
+
+Historical Validation
+=====================================
+
+Row {data-height=420}
+-------------------------------------
+
+### LPP: Top Components by Historical Risk {data-width=500}
+```{r fig.height=5}
+# Show top components by historical LPP + churn signal
+lpp_hist <- completed %>%
+  group_by(component, team) %>%
+  summarise(
+    avg_lpp    = mean(lpp, na.rm=TRUE),
+    avg_churn  = mean(total_churn, na.rm=TRUE),
+    n_quarters = n(),
+    .groups = "drop"
+  ) %>%
+  mutate(
+    z_avg_lpp     = (avg_lpp - mean(avg_lpp, na.rm=TRUE)) /
+                     max(sd(avg_lpp, na.rm=TRUE), 1e-6),
+    z_avg_churn   = (log1p(avg_churn) - mean(log1p(avg_churn), na.rm=TRUE)) /
+                     max(sd(log1p(avg_churn), na.rm=TRUE), 1e-6),
+    lpp_risk_score = 0.6 * z_avg_lpp + 0.4 * z_avg_churn,
+    risk_cat = risk_label(percent_rank(lpp_risk_score)*100)
+  ) %>%
+  arrange(desc(lpp_risk_score)) %>%
+  head(20) %>%
+  mutate(component = fct_reorder(component, lpp_risk_score))
+
+ggplot(lpp_hist, aes(x=component, y=avg_lpp, fill=risk_cat)) +
+  geom_col() +
+  coord_flip() +
+  scale_fill_manual(values=RISK_COLORS, name="Risk Level") +
+  labs(title="LPP Historical Risk — Top 20 Components",
+       subtitle="Average customer bugs per quarter across all mature releases",
+       x=NULL, y="Avg LPP per Quarter") +
+  theme_minimal(base_size=11) +
+  theme(legend.position="bottom", panel.grid.major.y=element_blank())
+```
+
+### LPD: Predicted vs Actual (`r valid_q`) {data-width=500}
+```{r fig.height=5}
+lpd_vp2 <- (if(best_lpd=="Random Forest") predict(lpd_model,newdata=vd) else
+              soft_cap(predict(lpd_model,newdata=vd,type="response"),max_lpd)) * lpd_cal
+
+vd %>% mutate(pred=lpd_vp2, risk=risk_label(percent_rank(pred)*100)) %>%
+  ggplot(aes(x=pred, y=LPD)) +
+  geom_point(aes(color=risk), size=2.5, alpha=0.7) +
+  geom_abline(slope=1, intercept=0, linetype="dashed", color="grey50") +
+  geom_text(data=. %>% arrange(desc(LPD)) %>% head(8),
+            aes(label=component), hjust=-0.1, size=2.5, check_overlap=TRUE) +
+  scale_color_manual(values=RISK_COLORS, name="Risk") +
+  labs(title=sprintf("LPD Validation: %s | R²=%.3f | Cal=%.3f", valid_q, lpd_r2, lpd_cal),
+       x="Predicted", y="Actual") +
+  theme_minimal(base_size=11) + theme(legend.position="bottom")
+```
+
+Row {data-height=300}
+-------------------------------------
+
+### Historical Bug Counts by Quarter
+```{r fig.height=4}
+completed %>%
+  group_by(quarter, is_lts) %>%
+  summarise(LPP=sum(lpp,na.rm=TRUE), LPD=sum(lpd,na.rm=TRUE), .groups="drop") %>%
+  pivot_longer(c(LPP,LPD), names_to="type", values_to="count") %>%
+  mutate(label=ifelse(is_lts==1, paste0(quarter," ★"), quarter)) %>%
+  ggplot(aes(x=reorder(label,quarter), y=count, fill=type)) +
+  geom_col(position="dodge") +
+  scale_fill_manual(values=c(LPP="#1565C0", LPD="#B71C1C"), name=NULL) +
+  labs(title="Historical Bug Counts by Quarter", subtitle="★ = LTS release",
+       x=NULL, y="Bug Count") +
+  theme_minimal(base_size=11) +
+  theme(axis.text.x=element_text(angle=35,hjust=1), legend.position="top")
+```

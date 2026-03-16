@@ -1,0 +1,84 @@
+databases:
+  release_analytics:
+    host: localhost
+    port: 5432
+    dbname: release_analytics
+    user: 
+    password: 
+  testray:
+    host: localhost
+    port: 5432
+    dbname: testray_working_db
+    user: 
+    password: 
+
+git:
+  repo_path: 
+  base_branch: master
+
+jira:
+  base_url: https://liferay.atlassian.net/
+  email: 
+  api_token: 
+  fix_priority_field: customfield_10211
+  queries:
+    lpp: "project = LPP and issuetype in (\"Customer Issue\") and affectedVersion >= 2024.Q1 and resolution not in (\"Won't Fix\", \"Wrongly Reported\", \"Incorrect Product\")"
+    lpd: "project = LPD AND issuetype = Bug AND created >= \"2023-11-05\""
+    lpd_blockers: "project in (LPD,LPS) AND issuetype = Bug AND labels = \"release-blocker\" AND created >= \"2023-11-05\""
+  dev_windows:    # LPDs without affectedVersion will fallback on createdDate to assign a 202x.Qy version
+  dev_windows:
+    - quarter: "2024.Q1"
+      dev_start: "2023-11-05"
+      dev_end:   "2024-02-07"
+    - quarter: "2024.Q2"
+      dev_start: "2024-02-08"
+      dev_end:   "2024-05-02"
+    - quarter: "2024.Q3"
+      dev_start: "2024-05-03"
+      dev_end:   "2024-07-17"
+    - quarter: "2024.Q4"
+      dev_start: "2024-07-18"
+      dev_end:   "2024-10-23"
+    - quarter: "2025.Q1"
+      dev_start: "2024-10-24"
+      dev_end:   "2025-01-17"
+    - quarter: "2025.Q2"
+      dev_start: "2025-01-18"
+      dev_end:   "2025-05-02"
+    - quarter: "2025.Q3"
+      dev_start: "2025-05-03"
+      dev_end:   "2025-07-26"
+    - quarter: "2025.Q4"
+      dev_start: "2025-07-27"
+      dev_end:   "2025-11-02"
+    - quarter: "2026.Q1"
+      dev_start: "2025-11-04"
+      dev_end:   "2026-02-27"
+
+scoring:
+  weight_source: manual_v1
+  weights:
+    complexity: 0.28
+    churn: 0.25
+    defect: 0.20
+    test: 0.15
+    dependency: 0.12
+  windows:
+    - 30
+    - 90
+    - 365
+  scoring_version: "1.0"
+
+sonarqube:
+  base_url: http://localhost:9000
+  token: 
+  project_key: liferay-portal
+
+testray:
+  base_url: https://testray.liferay.com
+  client_id:
+  client_secret: 
+
+
+
+

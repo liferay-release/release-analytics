@@ -1,0 +1,93 @@
+# Custom Stopwords for Bug Analysis
+# Add words to ignore (one per line)
+# Lines starting with # are comments and will be ignored
+# Blank lines are also ignored
+
+# Common technical terms that don't add meaning
+bug
+issue
+error
+errors
+problem
+fail
+failure
+failed
+report
+reported
+found
+detected
+occurs
+occurring
+happened
+happens
+
+# Version-related terms
+version
+release
+build
+
+# Generic verbs
+see
+seem
+seems
+appears
+appeared
+show
+shows
+showing
+get
+gets
+getting
+got
+
+# Product/company-specific terms
+liferay
+dxp
+portal
+github
+
+# User-reported noise words
+please
+help
+need
+needs
+urgent
+asap
+
+# Generic stopwords
+http
+https
+org
+zendesk
+reproduced
+actual results
+expected results
+actual
+expected
+result
+steps
+reproduce
+support
+customer
+master
+team
+lpp
+atlassian
+attachment
+attachments
+comment
+comments
+logs
+localhost
+8080
+
+# Formatting terms
+h1
+h2
+h3
+span
+png
+click
+behavior
+
+

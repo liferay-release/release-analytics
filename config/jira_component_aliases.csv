@@ -1,0 +1,221 @@
+jira_name,dim_component_name,team
+A/B Test,A/B Test,Analytics Cloud
+AMD Module Loader,,Frontend Infrastructure
+API,,Analytics Cloud
+API Builder,,Headless
+Accessibility Checker Tool,,Platform Experience
+Accessibility Framework,Accessibility Framework,Platform Experience
+Accessibility Menu,Accessibility Menu,Platform Experience
+Activities widget,Notifications,Content Management
+Adaptive Media,Adaptive Media,Content Management
+Alloy UI,,Frontend Infrastructure
+Announcements & Alerts widgets,Announcements,Content Management
+AntiSamy,AntiSamy,Application Security
+Antivirus,Antivirus,Application Security
+App Builder,Forms,Business Process Management
+App Management,Marketplace,Commerce
+App Manager,Marketplace,Commerce
+Application Display Templates,Templates Engine,Content Management
+Application Security,Application Security,Application Security
+Applications Menu,Control Menu,Platform Experience
+Asset Framework,Asset Framework,Content Management
+Asset Libraries,Asset Libraries,Content Management
+Asset Publisher widget,Asset Publisher Widget,Content Management
+Asset Sharing Framework,Asset Sharing,Content Management
+Assets,,SE Support
+Audit Framework,Audit,Application Security
+Audit Log,Audit,Application Security
+Auth Verifiers,Auth Verifiers,Application Security
+Auto Login,Auto Login,Application Security
+Auto Tagging Framework,Auto Tagging,Content Management
+Blogs,Blogs,Content Management
+Bookmarks,Bookmarks,Content Management
+Breadcrumb Widget,Navigation Menus,Site Management
+Business Productivity,Workflow,Business Process Management
+CKEditor,Frontend Editor,Frontend Infrastructure
+CMS,Content Management System,Content Management
+CMS Dashboard,Content Dashboard,Content Management
+CSS Client Extension,Frontend Client Extensions,Platform Experience
+Calendar,Calendar,Business Process Management
+Captcha,CAPTCHA,Application Security
+Categories,Categories,Content Management
+Clay,Clay,Platform Experience
+Clay Taglibs,Frontend Taglib,Frontend Infrastructure
+Click to Chat,Click to Chat,Content Management
+Client Extensions Framework,Frontend Client Extensions,Frontend Infrastructure
+Cloud Infrastructure,,Analytics Cloud
+Collections,Collections,Page Management
+Comments,Comment,Content Management
+Connectors,External Document Repositories,Headless
+Contacts Center,Contacts Center,Commerce
+Content Dashboard,Content Dashboard,Content Management
+Content Page Experience Personalization,Segmentation,Content Management
+Content Page Templates,Content Page Templates,Content Management
+Content Pages,Content Pages,Content Management
+Content Performance,Content Dashboard,Analytics Cloud
+Content Security Policy (CSP) Configuration,Application Security,Application Security
+Content Security policy (CSP),Application Security,Application Security
+Control Menu,Control Menu,Platform Experience
+Control Panel Framework,Control Menu,Platform Experience
+Cookie and Consent Management,Cookies,Application Security
+Core Infrastructure,Core Infrastructure,Core Infrastructure
+Cross-Cluster Replication,Search Infrastructure > Elasticsearch Connector,Search
+Cross-Origin Resource Sharing (CORS),Application Security,Application Security
+Custom Element,Frontend Client Extensions,Frontend Infrastructure
+Custom Fields,Custom Fields,Core Infrastructure
+DXP Connector,Analytics Cloud,Analytics Cloud
+Data Cleanup,Data Cleanup,Database Infrastructure
+Data Engine,Data Engine,Business Process Management
+Data Migration Center,Data Migration Center,Headless
+Database Access,Database Access,Core Infrastructure
+Database Partitioning,Database Partitioning,Database Infrastructure
+Database Upgrade Framework,Database Upgrade Framework,Database Infrastructure
+Database Upgrade Tool,Database Upgrade Tool,Database Infrastructure
+Dialect Design Pack,Liferay Themes,Platform Experience
+Digital Signature,Digital Signature,Business Process Management
+"Directives, Standards",Application Security,Application Security
+Display Page Templates,Display Page Templates,SE Support
+Documents & Media,Documents and Media,Content Management
+Dynamic CSS filter (sass),Frontend Other,Frontend Infrastructure
+Dynamic Data Lists,Dynamic Data Lists,Business Process Management
+Dynamic Data Mapping,Dynamic Data Mapping,Business Process Management
+Elasticsearch Connector,Search Infrastructure > Elasticsearch Connector,Search
+Event Analysis,,Analytics Cloud
+Event Generation,,SE Support
+Export/Import,Export/Import,Headless
+External Document Repositories,External Document Repositories,SE Support
+Feature Flags,Feature Flag,Platform Experience
+Form Builder,Forms,Business Process Management
+Forms,Forms,Business Process Management
+Fragment Administration,Fragment Administration,Content Management
+Fragments Toolkit,Fragment Administration,Content Management
+Framework,Portal Services,Frontend Infrastructure
+Freemarker OSGi Bridge,Portal Services,Core Infrastructure
+Friendly URL Service,Friendly URL Service,SE Support
+Frontend Data Set,Frontend Data Set,Frontend Infrastructure
+Frontend Data Set Cell Renderer,Frontend Data Set,Frontend Infrastructure
+Frontend Data Set Filter,Frontend Data Set,Frontend Infrastructure
+Frontend Token Infrastructure,Style Books,Frontend Infrastructure
+Geolocation,Google Places,Content Management
+Glowroot,Glow Root,Core Infrastructure
+Google Drive,External Document Repositories,SE Support
+GraphQL Infrastructure,REST Infrastructure,Headless
+GraphQL infrastructure (vulcan),REST Infrastructure,Headless
+Headless Admin Taxonomy API,Headless,Content Management
+Headless Admin User API,Headless,Commerce
+Headless Batch Engine API,Headless Batch Engine API,Headless
+Headless Discovery Application,Headless,Headless
+Headless Portal Instances API,Headless Portal Instances API,Database Infrastructure
+Headless Site API,Headless Site API,SE Support
+IFrame,IFrame Portlet,Frontend Infrastructure
+Iframe widget,IFrame Portlet,Content Management
+Impersonation,On Demand Admin,Application Security
+Individuals,,SE Support
+Info Framework,Info Framework,Content Management
+Interests,Segmentation,Analytics Cloud
+Invite Members widget,Invite Members,SE Support
+Item Selector,Item Selector,SE Support
+JS,Frontend JS,Frontend Infrastructure
+JS APIs and Utilities,JS APIs and Utilities,Frontend Infrastructure
+JS SDK,,Analytics Cloud
+JavaScript Import Maps Entry,Frontend Client Extensions,Frontend Infrastructure
+Job Scheduler,Job Scheduler,Headless
+Kaleo Designer,Kaleo Designer,Business Process Management
+Kaleo Workflow Forms,Kaleo Forms Admin,Business Process Management
+Knowledge Base widget,Knowledge Base,Content Management
+LDAP,LDAP,Application Security
+Language Override,Language Override,SE Support
+Language widget,Language Override,Content Management
+Lexicon,Clay,Platform Experience
+License Manager,,Commerce
+Liferay AUI Taglibs,Frontend Taglib,Frontend Infrastructure
+Liferay Frontend Taglibs,Frontend Taglib,Frontend Infrastructure
+Liferay Map Taglib,Frontend Other,Frontend Infrastructure
+Liferay Push,,Headless
+Liferay UI Taglibs,Frontend Taglib,Frontend Infrastructure
+Liferay Util Taglib,Frontend Taglib,Frontend Infrastructure
+Login/Sign in Portlet,Login,Application Security
+Marketplace,Marketplace,Commerce
+Mentions,Mentions,Content Management
+Message Boards,Message Boards,Content Management
+Metrics,Workflow Metrics,Business Process Management
+Microblogs,Microblogs,Content Management
+Multi-Factor Authentication,Multi Factor Authentication,Application Security
+Navigation Menus,Navigation Menus,Content Management
+Navigation Widget,Navigation Menus,Site Management
+Nested Portlets widget,Nested Portlets Widget,Content Management
+Notifications Framework,Notifications Framework,Business Process Management
+OAuth,OAuth 2,Application Security
+OAuth2,OAuth 2,Application Security
+Object Entries REST APIs,Object Entries REST APIs,Headless
+Objects,Objects,Business Process Management
+OpenAI,,SE Support
+OpenID Connect,OpenID Connect,Application Security
+OpenSearch Connector,Search Infrastructure > OpenSearch Connector,Search
+Order Management,Order Management,Commerce
+Out of the box Fragments,Out of the box Fragments,Page Management
+Page Administration,Page Administration,Content Management
+Page Editor,Content Pages,Content Management
+Pages,,SE Support
+Password,Password,Application Security
+Password Policies,Password Policies,Application Security
+Permissions,Permissions,Core Infrastructure
+Plugins Configuration,,Commerce
+Portal Configuration,Portal Configuration,Core Infrastructure
+Portal Instances,Virtual Instances,Core Infrastructure
+Portal Services,Portal Services,Core Infrastructure
+Portlet Sandboxes,,Commerce
+Product Information Management,Product Information Management,Commerce
+Publications,Publications,Site Management
+Purchased,,Commerce
+Questions,Questions,Content Management
+REST Builder,,Headless
+REST Infrastructure,REST Infrastructure,Headless
+REST infrastructure (vulcan),REST Infrastructure,Headless
+RSS Publisher widget,RSS Publisher Widget,Content Management
+Ratings,Ratings,Content Management
+Recommendation,,Analytics Cloud
+Recycle Bin,Recycle Bin,SE Support
+SAML,SAML,Application Security
+SCIM (System for Cross-domain Identity Management),SCIM,Application Security
+Search Blueprints,Search Blueprints,Search
+Search Experiences,Search Blueprints,Search
+Search Infrastructure,Search Infrastructure,Search
+Search Tuning,Search Blueprints,Search
+Security HTTP Headers,Application Security,Application Security
+Security Posture Management,Application Security,Application Security
+Segmentation,Segmentation,Analytics Cloud
+Segments,,SE Support
+Server Administration,Server Administration,Core Infrastructure
+Shopping Experience,Shopping Experience,Commerce
+Site,Sites Administration,Analytics Cloud
+Site Initializer,Site Management > Site Initializer,Site Management
+Site Memberships,Sites Administration,Site Management
+Sites,,SE Support
+Sites Administration,Sites Administration,Site Management
+Social Bookmarks,Social Bookmarks,Content Management
+Solr Connector,Search Infrastructure > Solr Connector,Search
+Staging,Staging,Headless
+Store,,Commerce
+Structured Content,Web Content,Content Management
+Structured Contents,Web Content,SE Support
+Style Books,Style Books,Page Management
+Tags,Tags,SE Support
+Test Infrastructure,,Analytics Cloud
+Theme CSS,Frontend Client Extensions,Frontend Infrastructure
+Translations Management,Translations Management,SE Support
+Upgrade Logging,Upgrade Logging,Database Infrastructure
+Upgrade Report,Upgrade Report,Database Infrastructure
+User Management,User Management,Commerce
+User Notifications,User Notifications,SE Support
+Users & Organizations,Users and Organizations,Commerce
+Utility Pages,Application Security,Application Security
+Virtual Instances,Virtual Instances,Core Infrastructure
+Web Content,Web Content,Content Management
+Web Content Display widget,Web Content,Content Management
+Web Search,Web Search,Search
+Web Services,Web Services,SE Support
+WebDAV Authentication,Application Security,Application Security
+Widget Page Templates,Widget Page Templates,Content Management
+Wiki,Wiki,Content Management
+Workflow,Workflow,Business Process Management
