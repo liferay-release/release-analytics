@@ -2,8 +2,8 @@
 
 Release analytics for Liferay DXP built around two goals:
 
-- **Before release:** Where should testing effort be focused?
-- **After release:** Learn from what escape to get better for the next cycle.
+- **Before release:** Determine where testing effort should be focused.
+- **After release:** Learn from what escaped to get better for the next cycle.
 
 ---
 
@@ -309,4 +309,4 @@ Output: a risk score (0–100) per affected module with signal breakdown.
 Project conception, analytical direction, methodology, data-sourcing, and domain expertise are by the Liferay Release Team. 
 Code generation and implementation is supported with Claude (Anthropic).
 
-For database access or questions about the platform, reach out directly, [@nikki-pru]
+For database access or questions about the platform reach out directly to @nikki-pru
