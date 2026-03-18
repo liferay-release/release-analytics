@@ -47,9 +47,10 @@ log_info("Date range: {min(cr$date_created)} to {max(cr$date_created)}")
 comp_ids <- dbGetQuery(con, "SELECT component_id, component_name FROM dim_component")
 mod_ids  <- dbGetQuery(con, "SELECT module_id, module_name FROM dim_module")
 crosswalk <- dbGetQuery(con, "
-  SELECT mc.module_id, mc.component_id, m.module_name, c.component_name
-  FROM module_component_map mc
-  JOIN dim_module m    ON mc.module_id    = m.module_id
+  SELECT mc.component_id, m.module_id, m.module_name, c.component_name
+  FROM dim_module_component_map mc
+  JOIN dim_module m    ON REGEXP_REPLACE(mc.module_path, '^modules/(dxp/)?apps/', '') =
+                         REGEXP_REPLACE(m.module_name,  '^modules/(dxp/)?apps/', '')
   JOIN dim_component c ON mc.component_id = c.component_id
 ")
 

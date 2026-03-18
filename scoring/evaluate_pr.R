@@ -186,8 +186,10 @@ if (length(affected_modules) > 0) {
   affected_components <- dbGetQuery(con, glue("
     SELECT DISTINCT c.component_name
     FROM dim_module m
-    JOIN module_component_map mc ON m.module_id = mc.module_id
-    JOIN dim_component c         ON mc.component_id = c.component_id
+    JOIN dim_module_component_map mc
+      ON REGEXP_REPLACE(mc.module_path, '^modules/(dxp/)?apps/', '') =
+         REGEXP_REPLACE(m.module_name,  '^modules/(dxp/)?apps/', '')
+    JOIN dim_component c ON mc.component_id = c.component_id
     WHERE m.module_name IN ({modules_sql})
     AND m.module_name NOT IN ('portal-impl', 'portal-kernel', 'portal-web')
   ")) |> pull(component_name)
