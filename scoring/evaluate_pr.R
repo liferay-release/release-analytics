@@ -195,6 +195,9 @@ if (length(affected_modules) > 0) {
   ")) |> pull(component_name)
 
   # Top signal test cases within those components
+  # Strategy: top 3 per component (ranked by signal), then interleave across
+  # components by signal so the final list represents all affected areas,
+  # not just whichever component happens to have the highest global scores.
   if (length(affected_components) > 0) {
     components_sql <- paste(glue("'{affected_components}'"), collapse = ",")
     suggested_tests <- dbGetQuery(con, glue("
@@ -204,11 +207,20 @@ if (length(affected_modules) > 0) {
         signal_score,
         investigation_rate,
         total_fail_builds
-      FROM fact_test_quality
-      WHERE component_name IN ({components_sql})
-      AND signal_score > 0
+      FROM (
+        SELECT
+          case_name,
+          component_name,
+          signal_score,
+          investigation_rate,
+          total_fail_builds,
+          ROW_NUMBER() OVER (PARTITION BY component_name ORDER BY signal_score DESC) AS rn
+        FROM fact_test_quality
+        WHERE component_name IN ({components_sql})
+        AND signal_score >= 0.10
+      ) ranked
+      WHERE rn <= 3
       ORDER BY signal_score DESC
-      LIMIT 10
     "))
   }
 }
