@@ -173,7 +173,7 @@ test_quality <- failures |>
     )
   ) |>
   filter(total_fail_builds >= MIN_FAIL_BUILDS) |>
-  arrange(desc(signal_score), desc(bug_catch_rate), desc(total_fail_builds))
+  arrange(desc(signal_score), desc(investigation_rate), desc(total_fail_builds))
 
 # Resolve cases mapped to multiple components — keep most recent component
 latest_component <- failures |>
@@ -196,7 +196,7 @@ log_info("Top 10 highest signal test cases:")
 test_quality |>
   head(10) |>
   rowwise() |>
-  group_walk(~ log_info("  [{.x$component_name}] {.x$case_name}: signal={.x$signal_score} bug_catch_rate={.x$bug_catch_rate} ({.x$bug_linked_builds}/{.x$total_fail_builds})"))
+  group_walk(~ log_info("  [{.x$component_name}] {.x$case_name}: signal={.x$signal_score} investigation_rate={.x$investigation_rate} ({.x$bug_linked_builds}/{.x$total_fail_builds})"))
 
 # -----------------------------------------------------------------------------
 # Step 3 — Create tables in release_analytics if not exists
@@ -236,7 +236,7 @@ dbExecute(con_analytics, "
     total_fail_builds    INT DEFAULT 0,
     bug_linked_builds    INT DEFAULT 0,
     distinct_bugs_linked INT DEFAULT 0,
-    bug_catch_rate       NUMERIC(6,4) DEFAULT 0,
+    investigation_rate   NUMERIC(6,4) DEFAULT 0,
     signal_score         NUMERIC(6,4) DEFAULT 0,
     calculated_at        TIMESTAMP DEFAULT NOW(),
     UNIQUE (case_id)
@@ -293,7 +293,7 @@ dbWriteTable(con_analytics, "temp_test_quality",
              test_quality |>
                select(case_id, case_name, case_type, component_name, team_name,
                       total_fail_builds, bug_linked_builds, distinct_bugs_linked,
-                      bug_catch_rate, signal_score),
+                      investigation_rate, signal_score),
              temporary = TRUE, overwrite = TRUE
 )
 
@@ -301,11 +301,11 @@ dbExecute(con_analytics, "
   INSERT INTO fact_test_quality (
     case_id, case_name, case_type, component_name, team_name,
     total_fail_builds, bug_linked_builds, distinct_bugs_linked,
-    bug_catch_rate, signal_score, calculated_at
+    investigation_rate, signal_score, calculated_at
   )
   SELECT case_id, case_name, case_type, component_name, team_name,
          total_fail_builds, bug_linked_builds, distinct_bugs_linked,
-         bug_catch_rate, signal_score, NOW()
+         investigation_rate, signal_score, NOW()
   FROM temp_test_quality
   ON CONFLICT (case_id) DO UPDATE SET
     case_name            = EXCLUDED.case_name,
@@ -315,7 +315,7 @@ dbExecute(con_analytics, "
     total_fail_builds    = EXCLUDED.total_fail_builds,
     bug_linked_builds    = EXCLUDED.bug_linked_builds,
     distinct_bugs_linked = EXCLUDED.distinct_bugs_linked,
-    bug_catch_rate       = EXCLUDED.bug_catch_rate,
+    investigation_rate   = EXCLUDED.investigation_rate,
     signal_score         = EXCLUDED.signal_score,
     calculated_at        = NOW()
 ")

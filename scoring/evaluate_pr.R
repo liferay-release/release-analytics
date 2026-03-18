@@ -200,7 +200,7 @@ if (length(affected_modules) > 0) {
         case_name,
         component_name,
         signal_score,
-        bug_catch_rate,
+        investigation_rate,
         total_fail_builds
       FROM fact_test_quality
       WHERE component_name IN ({components_sql})
@@ -351,7 +351,7 @@ if (nrow(suggested_tests) > 0) {
   for (i in seq_len(nrow(suggested_tests))) {
     t <- suggested_tests[i, ]
     cat(glue("  [{t$component_name}] {t$case_name}"), "\n")
-    cat(glue("    signal: {t$signal_score}  bug_catch_rate: {t$bug_catch_rate}  fail_builds: {t$total_fail_builds}"), "\n")
+    cat(glue("    signal: {t$signal_score}  investigation_rate: {t$investigation_rate}  fail_builds: {t$total_fail_builds}"), "\n")
   }
   cat("\n")
 }
