@@ -573,64 +573,86 @@ write_export(releases, dir_situation, "S06_dim_releases.csv")
 
 # =============================================================================
 # 07. TEAM SCORECARD
-# Aggregates forecast_by_component to team level.
-# Combines bug counts, blocker counts, churn, and model predictions.
-# Looker use: team-level scorecard, testing effectiveness quadrant.
+# Aggregates forecast_by_component to team level — ALL mature quarters plus
+# the forecast quarter, for trend comparison in Looker.
+# Acceptance signal = routine 590307 (Acceptance routine)
+# Release signal    = routine 82964  (Release routine)
+# Looker use: team-level scorecard, quarter-over-quarter trend, signal quadrant.
 # =============================================================================
 message("\n--- 07 team_scorecard ---")
 
+# Routine-level test signal: acceptance (590307) and release (82964)
+# Pulled directly from fact_test_quality filtered by routine_id
+routine_signal <- dbGetQuery(con, "
+  SELECT
+    tq.team_name                                        AS team,
+    tq.routine_id,
+    COUNT(DISTINCT tq.case_id)                          AS n_test_cases,
+    SUM(tq.total_fail_builds)                           AS total_failures,
+    ROUND(AVG(tq.investigation_rate)::NUMERIC, 4)       AS catch_rate,
+    ROUND(AVG(tq.signal_score)::NUMERIC, 4)             AS signal_score,
+    COUNT(CASE WHEN tq.investigation_rate = 0 THEN 1 END) AS zero_catch_tests,
+    ROUND(
+      COUNT(CASE WHEN tq.investigation_rate = 0 THEN 1 END)::NUMERIC /
+      NULLIF(COUNT(DISTINCT tq.case_id), 0) * 100, 1
+    )                                                   AS pct_zero_catch
+  FROM fact_test_quality tq
+  WHERE tq.routine_id IN (590307, 82964)
+  GROUP BY tq.team_name, tq.routine_id
+")
+
+acceptance_signal <- routine_signal %>%
+  filter(routine_id == 590307) %>%
+  dplyr::select(team,
+    acceptance_cases    = n_test_cases,
+    acceptance_failures = total_failures,
+    acceptance_catch_rate = catch_rate,
+    acceptance_signal   = signal_score,
+    acceptance_pct_zero = pct_zero_catch
+  )
+
+release_signal_df <- routine_signal %>%
+  filter(routine_id == 82964) %>%
+  dplyr::select(team,
+    release_cases    = n_test_cases,
+    release_failures = total_failures,
+    release_catch_rate = catch_rate,
+    release_signal   = signal_score,
+    release_pct_zero = pct_zero_catch
+  )
+
+# All quarters — mature + forecast — for trend comparison
+all_quarters <- c(mature_q, FORECAST_Q)
+
 team_scorecard <- forecast_by_component %>%
-  filter(!is.na(team), quarter == FORECAST_Q) %>%
-  group_by(team) %>%
+  filter(!is.na(team), quarter %in% all_quarters) %>%
+  group_by(quarter, team) %>%
   summarise(
     n_components    = n(),
     # Bug counts
-    lpp_count       = sum(lpp_actual,     na.rm = TRUE),
-    lpd_count       = sum(lpd_actual,     na.rm = TRUE),
-    blocker_count   = sum(blocker_count,  na.rm = TRUE),
+    lpp_count       = sum(lpp_actual,      na.rm = TRUE),
+    lpd_count       = sum(lpd_actual,      na.rm = TRUE),
+    blocker_count   = sum(blocker_count,   na.rm = TRUE),
     # LPD forecast
-    lpd_predicted   = round(sum(lpd_pred, na.rm = TRUE), 0),
+    lpd_predicted   = round(sum(lpd_pred,  na.rm = TRUE), 0),
     # Churn
-    total_churn     = sum(total_churn,    na.rm = TRUE),
-    backend_churn   = sum(backend_changes,na.rm = TRUE),
-    frontend_churn  = sum(frontend_changes,na.rm=TRUE),
+    total_churn     = sum(total_churn,     na.rm = TRUE),
+    backend_churn   = sum(backend_changes, na.rm = TRUE),
+    frontend_churn  = sum(frontend_changes,na.rm = TRUE),
     # Risk
-    avg_risk_score  = round(mean(risk_score, na.rm = TRUE), 1),
+    avg_risk_score  = round(mean(risk_score,  na.rm = TRUE), 1),
     n_high_risk     = sum(overall_risk %in% c("High", "Very High"), na.rm = TRUE),
     .groups = "drop"
   ) %>%
-  # Join test health — Acceptance tests (Automated Functional Test)
-  left_join(
-    test_health_by_team %>%
-      filter(case_type == "Automated Functional Test") %>%
-      dplyr::select(team, acceptance_cases = n_test_cases,
-             acceptance_failures    = total_failures,
-             acceptance_catch_rate  = avg_investigation_rate,
-             acceptance_signal      = avg_signal_score,
-             acceptance_pct_zero    = pct_zero_catch),
-    by = "team"
-  ) %>%
-  # Join test health — Release tests (Modules Integration Test)
-  left_join(
-    test_health_by_team %>%
-      filter(case_type == "Modules Integration Test") %>%
-      dplyr::select(team, release_cases    = n_test_cases,
-             release_failures       = total_failures,
-             release_catch_rate     = avg_investigation_rate,
-             release_signal         = avg_signal_score,
-             release_pct_zero       = pct_zero_catch),
-    by = "team"
-  ) %>%
+  # Routine-based test signals — same values for all quarters (point-in-time)
+  left_join(acceptance_signal, by = "team") %>%
+  left_join(release_signal_df, by = "team") %>%
   mutate(
-    release_label = FORECAST_Q,
-    # Testing effectiveness signal — for quadrant analysis in Looker
-    # High LPP + High pass rate = not testing right things
-    # High LPD + Low LPP = catching before customers (good)
-    # High blockers + High release pass rate = not testing right things
+    release_label = quarter,
     lpp_lpd_ratio = round(ifelse(lpd_count > 0, lpp_count / lpd_count, NA_real_), 2),
     blocker_rate  = round(ifelse(lpd_count > 0, blocker_count / lpd_count * 100, 0), 1)
   ) %>%
-  arrange(desc(avg_risk_score))
+  arrange(quarter, desc(avg_risk_score))
 
 write_export(team_scorecard, dir_situation, "S07_team_scorecard.csv")
 
