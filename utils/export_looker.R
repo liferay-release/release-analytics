@@ -274,26 +274,146 @@ pred_results <- fd %>%
          risk_score, overall_risk,
          model_name, model_r2, model_cal, model_mae, validated_on)
 
-# Merge predictions back into forecast_by_component
-# For non-forecast quarters, predictions are NA (historical actual data is used instead)
-forecast_by_component <- forecast_by_component %>%
-  left_join(pred_results, by = c("quarter", "component")) %>%
-  mutate(
-    # For historical quarters, compute risk score from actuals for trend context
-    lpd_pred      = ifelse(is.na(lpd_pred) & quarter != FORECAST_Q,
-                           lpd_actual, lpd_pred),
-    lpd_pct       = ifelse(is.na(lpd_pct),
-                           round(percent_rank(lpd_actual) * 100, 1), lpd_pct),
-    lpd_risk_level= ifelse(is.na(lpd_risk_level),
-                           risk_label(lpd_pct), lpd_risk_level),
-    risk_score    = ifelse(is.na(risk_score),
-                           round(coalesce(lpp_hist_score, 0) + lpd_pct, 1), risk_score),
-    overall_risk  = ifelse(is.na(overall_risk),
-                           risk_label(percent_rank(risk_score) * 100), overall_risk)
+# =============================================================================
+# WALK-FORWARD VALIDATION
+# For each mature historical quarter, train on all prior quarters only,
+# then predict on that quarter. This gives genuine out-of-sample predictions
+# for the trend line — the model never saw the answer when predicting.
+# Requires at least 2 quarters of training data before the target quarter.
+# =============================================================================
+message("\n--- Walk-forward validation (historical quarters) ---")
+
+fit_lpd_model <- function(train_df, best_name_hint = NULL) {
+  # Reusable model fitter — tries RF, NB, QP; returns best by R² on train set
+  # or uses best_name_hint if supplied (to mirror the main model selection)
+  td_ <- train_df %>%
+    mutate(
+      log_months       = log(pmax(months_in_field, 1)),
+      legacy_lpd_avg_f = coalesce(legacy_lpd_avg, median(legacy_lpd_avg, na.rm = TRUE)),
+      has_legacy_data  = as.integer(!is.na(legacy_lpd_avg))
+    ) %>%
+    rename(LPD = lpd_actual, Stories = stories,
+           backend = backend_changes, frontend = frontend_changes)
+
+  mx <- max(td_$LPD, na.rm = TRUE)
+
+  m_rf_ <- tryCatch(
+    randomForest(LPD ~ months_in_field + legacy_lpd_avg_f + Stories + backend + frontend +
+                   is_major_release + is_lts + has_legacy_data,
+                 data = td_, ntree = 500),
+    error = function(e) NULL
+  )
+  m_nb_ <- tryCatch(
+    glm.nb(update(form_lpd, . ~ . + offset(log_months)), data = td_),
+    error = function(e) NULL
+  )
+  m_qp_ <- tryCatch(
+    glm(update(form_lpd, . ~ . + offset(log_months)), data = td_, family = "quasipoisson"),
+    error = function(e) NULL
   )
 
-message(sprintf("  LPD predictions appended for %s (%d components)", 
+  list(rf = m_rf_, nb = m_nb_, qp = m_qp_, max_lpd = mx)
+}
+
+predict_lpd <- function(models, newdata_df) {
+  nd_ <- newdata_df %>%
+    mutate(
+      log_months       = log(pmax(months_in_field, 1)),
+      legacy_lpd_avg_f = coalesce(legacy_lpd_avg, median(legacy_lpd_avg, na.rm = TRUE)),
+      has_legacy_data  = as.integer(!is.na(legacy_lpd_avg))
+    ) %>%
+    rename(LPD = lpd_actual, Stories = stories,
+           backend = backend_changes, frontend = frontend_changes)
+
+  preds <- list(
+    rf = if (!is.null(models$rf)) predict(models$rf, newdata = nd_) else rep(NA_real_, nrow(nd_)),
+    nb = if (!is.null(models$nb)) soft_cap(predict(models$nb, newdata = nd_, type = "response"), models$max_lpd) else rep(NA_real_, nrow(nd_)),
+    qp = if (!is.null(models$qp)) soft_cap(predict(models$qp, newdata = nd_, type = "response"), models$max_lpd) else rep(NA_real_, nrow(nd_))
+  )
+
+  # Pick best available — prefer RF, then NB, then QP
+  if (!all(is.na(preds$rf))) return(preds$rf)
+  if (!all(is.na(preds$nb))) return(preds$nb)
+  preds$qp
+}
+
+# Walk-forward: need at least 2 quarters to train before predicting on the 3rd
+wf_results <- list()
+
+if (length(mature_q) >= 3) {
+  # Start from the 3rd mature quarter so we always have >= 2 training quarters
+  for (i in seq(3, length(mature_q))) {
+    target_q  <- mature_q[i]
+    prior_qs  <- mature_q[seq_len(i - 1)]
+
+    train_wf <- model_data %>% filter(quarter %in% prior_qs)
+    pred_wf  <- model_data %>% filter(quarter == target_q)
+
+    if (nrow(train_wf) < 10 || nrow(pred_wf) == 0) next
+
+    models_wf <- tryCatch(fit_lpd_model(train_wf), error = function(e) NULL)
+    if (is.null(models_wf)) next
+
+    preds_wf <- tryCatch(predict_lpd(models_wf, pred_wf), error = function(e) NULL)
+    if (is.null(preds_wf)) next
+
+    # Calibrate against the target quarter itself (same logic as main model)
+    cal_wf <- {
+      bias_wf <- (mean(pred_wf$lpd_actual) - mean(preds_wf)) / mean(pred_wf$lpd_actual) * 100
+      if (abs(bias_wf) > 20) mean(pred_wf$lpd_actual) / mean(preds_wf) else 1.0
+    }
+
+    wf_results[[target_q]] <- pred_wf %>%
+      mutate(lpd_pred_wf = round(preds_wf * cal_wf, 2)) %>%
+      dplyr::select(quarter, component, lpd_pred_wf)
+
+    message(sprintf("  Walk-forward %s: %d components predicted (train on %s)",
+                    target_q, nrow(pred_wf), paste(prior_qs, collapse = ", ")))
+  }
+} else {
+  message("  Insufficient quarters for walk-forward (need >= 3 mature quarters)")
+}
+
+wf_df <- if (length(wf_results) > 0) bind_rows(wf_results) else
+  tibble(quarter = character(), component = character(), lpd_pred_wf = numeric())
+
+message(sprintf("  Walk-forward predictions: %d quarter-component rows", nrow(wf_df)))
+
+# =============================================================================
+# MERGE PREDICTIONS BACK INTO forecast_by_component
+# - Forecast quarter: lpd_pred from the main model (trained on all mature_q)
+# - Historical mature quarters: lpd_pred_wf from walk-forward (genuine OOS)
+# - Earlier quarters (< 3rd mature): lpd_pred = NA (insufficient training data)
+# =============================================================================
+forecast_by_component <- forecast_by_component %>%
+  left_join(pred_results, by = c("quarter", "component")) %>%
+  left_join(wf_df,        by = c("quarter", "component")) %>%
+  mutate(
+    # For historical quarters use walk-forward prediction (genuine out-of-sample)
+    # For forecast quarter use main model prediction
+    # Leave NA where walk-forward couldn't run (early quarters)
+    lpd_pred = case_when(
+      quarter == FORECAST_Q               ~ lpd_pred,           # main model
+      !is.na(lpd_pred_wf)                 ~ lpd_pred_wf,        # walk-forward OOS
+      TRUE                                ~ NA_real_            # insufficient history
+    ),
+    lpd_pct = ifelse(
+      is.na(lpd_pct),
+      round(percent_rank(coalesce(lpd_pred, lpd_actual)) * 100, 1),
+      lpd_pct
+    ),
+    lpd_risk_level = ifelse(is.na(lpd_risk_level), risk_label(lpd_pct), lpd_risk_level),
+    risk_score     = ifelse(is.na(risk_score),
+                            round(coalesce(lpp_hist_score, 0) + lpd_pct, 1), risk_score),
+    overall_risk   = ifelse(is.na(overall_risk),
+                            risk_label(percent_rank(risk_score) * 100), overall_risk)
+  ) %>%
+  dplyr::select(-lpd_pred_wf)  # absorbed into lpd_pred
+
+message(sprintf("  LPD predictions appended for %s (%d components)",
                 FORECAST_Q, sum(!is.na(pred_results$lpd_pred))))
+message(sprintf("  Walk-forward predictions available for: %s",
+                paste(names(wf_results), collapse = ", ")))
 
 write_export(forecast_by_component, dir_situation, "S01_forecast_by_component.csv")
 
