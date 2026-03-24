@@ -25,6 +25,7 @@ jira:
     lpp: "project = LPP and issuetype in (\"Customer Issue\") and affectedVersion >= 2024.Q1 and resolution not in (\"Won't Fix\", \"Wrongly Reported\", \"Incorrect Product\")"
     lpd: "project = LPD AND issuetype = Bug AND created >= \"2023-11-05\""
     lpd_blockers: "project in (LPD,LPS) AND issuetype = Bug AND labels = \"release-blocker\" AND created >= \"2023-11-05\""
+    lpd_stories: "filter in (15254, 15767, 16461, 16985, 17340, 17879, 16986, 15858, 16462, 17341, 17880,18510, 18508, 27587, 45820) and type = Story"
   dev_windows:    # LPDs without affectedVersion will fallback on createdDate to assign a 202x.Qy version
     - quarter: "2024.Q1"
       dev_start: "2023-11-05"
