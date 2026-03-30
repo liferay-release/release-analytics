@@ -242,48 +242,59 @@ rows_affected <- dbExecute(con, file_agg_sql)
 log_info("fact_file_complexity upserted: {rows_affected} file-level rows")
 
 # -----------------------------------------------------------------------------
-# 5. Recalibrate scoring_normalization p95 denominators
+# 5. Update scoring_normalization p95 denominators
+#
+# complexity_p95 (max_ccn denominator) is PINNED at 16.
+#   - Anchored at lizard's own warning threshold (CCN >= 15 = complex function)
+#   - Using max_ccn not avg_ccn — worst function per file is where bugs live
+#   - avg_ccn gets diluted by getters/setters in OSGi modules; max_ccn does not
+#   - DO NOT auto-recalibrate this value — it is a fixed reference point,
+#     not a corpus statistic. Changing it shifts all historical risk scores.
+#
+# cognitive_p95 (avg_nloc) continues to auto-recalibrate — it has no
+# established industry threshold equivalent to CCN 15.
 # -----------------------------------------------------------------------------
-log_info("Recalibrating scoring_normalization p95 denominators")
+log_info("Updating scoring_normalization p95 denominators")
 
-recal_sql <- "
+MAX_CCN_P95_PINNED <- 16  # fixed — lizard warning threshold anchor, do not change
+
+recal_sql <- glue::glue("
 UPDATE scoring_normalization
 SET
-    complexity_p95 = (
-        SELECT PERCENTILE_CONT(0.95) WITHIN GROUP (ORDER BY avg_ccn)
-        FROM fact_file_complexity
-    ),
-    cognitive_p95 = (
+    complexity_p95 = {MAX_CCN_P95_PINNED},
+    cognitive_p95  = (
         SELECT PERCENTILE_CONT(0.95) WITHIN GROUP (ORDER BY avg_nloc)
         FROM fact_file_complexity
     ),
-    calculated_at = NOW()
+    calculated_at  = NOW()
 WHERE scoring_version = '1.0';
-"
+")
 
 recal_rows <- dbExecute(con, recal_sql)
 log_info("scoring_normalization rows updated: {recal_rows}")
 
-# Log new p95 values for the record
+# Log current values for the record
 p95_check <- dbGetQuery(con, "
   SELECT complexity_p95, cognitive_p95
   FROM scoring_normalization
   WHERE scoring_version = '1.0'
   LIMIT 1
 ")
-log_info("  p95 complexity (avg_ccn):  {p95_check$complexity_p95[1]}")
-log_info("  p95 cognitive  (avg_nloc): {p95_check$cognitive_p95[1]}")
+log_info("  p95 complexity (max_ccn, pinned): {p95_check$complexity_p95[1]}")
+log_info("  p95 cognitive  (avg_nloc, auto):  {p95_check$cognitive_p95[1]}")
 
 # -----------------------------------------------------------------------------
-# 6. Spot-check: top 10 components by avg_ccn
+# 6. Spot-check: top 10 components by max_ccn
+#    Sorted by MAX(max_ccn) — worst function per file, per component.
+#    This is the primary complexity signal used in scoring and L04.
 # -----------------------------------------------------------------------------
-log_info("Spot check: top 10 components by avg_ccn")
+log_info("Spot check: top 10 components by max_ccn")
 
 spot <- dbGetQuery(con, "
   SELECT
       dc.component_name,
-      ROUND(AVG(f.avg_ccn)::NUMERIC,          2) AS component_avg_ccn,
       MAX(f.max_ccn)                              AS component_max_ccn,
+      ROUND(AVG(f.avg_ccn)::NUMERIC,          2) AS component_avg_ccn,
       ROUND(AVG(f.avg_ccn_java)::NUMERIC,     2) AS avg_ccn_java,
       ROUND(AVG(f.avg_ccn_frontend)::NUMERIC, 2) AS avg_ccn_frontend
   FROM fact_file_complexity f
@@ -292,12 +303,12 @@ spot <- dbGetQuery(con, "
   JOIN dim_module_component_map mcm ON mcm.module_path  = dm.module_path_category
   JOIN dim_component dc             ON dc.component_id  = mcm.component_id
   GROUP BY dc.component_name
-  ORDER BY component_avg_ccn DESC
+  ORDER BY component_max_ccn DESC
   LIMIT 10
 ")
 
 pwalk(spot, ~log_info(
-  "  {..1}: avg_ccn={..2}, max_ccn={..3}, java={..4}, frontend={..5}"
+  "  {..1}: max_ccn={..2}, avg_ccn={..3}, java={..4}, frontend={..5}"
 ))
 
 # -----------------------------------------------------------------------------
