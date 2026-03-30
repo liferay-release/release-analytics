@@ -112,14 +112,13 @@ forecast_by_component <- dbGetQuery(con, "
     fi.java_deletions,
     fi.tsx_insertions,
     fi.tsx_deletions,
-    fi.breaking_changes,
+    fi.breaking_count,
     fi.java_file_count,
     fi.java_lines_of_code,
     fi.is_forecast_row
   FROM fact_forecast_input fi
   JOIN dim_component dc ON dc.component_id = fi.component_id
   JOIN dim_release   dr ON dr.release_label = fi.quarter
-  WHERE fi.quarter LIKE '%.Q%'
   ORDER BY dr.release_date NULLS LAST, dc.component_name
 ") %>%
   # Compute legacy baselines (2024 average per component)
@@ -457,12 +456,12 @@ churn_by_component <- dbGetQuery(con, "
     fi.java_lines_of_code,
     fi.tsx_file_count,
     fi.tsx_lines_of_code,
-    fi.breaking_changes,
+    fi.breaking_count,
     fi.is_forecast_row
   FROM fact_forecast_input fi
   JOIN dim_component dc ON dc.component_id = fi.component_id
   JOIN dim_release   dr ON dr.release_label = fi.quarter
-  ORDER BY dr.release_date NULLS LAST, dc.component_name
+  ORDER BY dr.release_date NULLS LAST, dc.component_name;
 ")
 
 write_export(churn_by_component, dir_situation, "S02_churn_by_component.csv")
@@ -485,7 +484,7 @@ churn_by_team <- churn_by_component %>%
     total_churn        = sum(total_churn,       na.rm = TRUE),
     total_java_ins     = sum(java_insertions,   na.rm = TRUE),
     total_tsx_ins      = sum(tsx_insertions,    na.rm = TRUE),
-    total_breaking     = sum(breaking_changes,  na.rm = TRUE),
+    total_breaking     = sum(breaking_count,  na.rm = TRUE),
     avg_churn_per_comp = round(mean(total_churn, na.rm = TRUE), 1),
     .groups = "drop"
   ) %>%
@@ -586,7 +585,6 @@ message("\n--- 07 team_scorecard ---")
 routine_signal <- dbGetQuery(con, "
   SELECT
     tq.team_name                                        AS team,
-    tq.routine_id,
     COUNT(DISTINCT tq.case_id)                          AS n_test_cases,
     SUM(tq.total_fail_builds)                           AS total_failures,
     ROUND(AVG(tq.investigation_rate)::NUMERIC, 4)       AS catch_rate,
@@ -597,29 +595,28 @@ routine_signal <- dbGetQuery(con, "
       NULLIF(COUNT(DISTINCT tq.case_id), 0) * 100, 1
     )                                                   AS pct_zero_catch
   FROM fact_test_quality tq
-  WHERE tq.routine_id IN (590307, 82964)
-  GROUP BY tq.team_name, tq.routine_id
+  GROUP BY tq.team_name
 ")
 
-acceptance_signal <- routine_signal %>%
-  filter(routine_id == 590307) %>%
-  dplyr::select(team,
-    acceptance_cases    = n_test_cases,
-    acceptance_failures = total_failures,
-    acceptance_catch_rate = catch_rate,
-    acceptance_signal   = signal_score,
-    acceptance_pct_zero = pct_zero_catch
-  )
+# acceptance_signal <- routine_signal %>%
+#   filter(routine_id == 590307) %>%
+#   dplyr::select(team,
+#     acceptance_cases    = n_test_cases,
+#     acceptance_failures = total_failures,
+#     acceptance_catch_rate = catch_rate,
+#     acceptance_signal   = signal_score,
+#     acceptance_pct_zero = pct_zero_catch
+#   )
 
-release_signal_df <- routine_signal %>%
-  filter(routine_id == 82964) %>%
-  dplyr::select(team,
-    release_cases    = n_test_cases,
-    release_failures = total_failures,
-    release_catch_rate = catch_rate,
-    release_signal   = signal_score,
-    release_pct_zero = pct_zero_catch
-  )
+# release_signal_df <- routine_signal %>%
+#   filter(routine_id == 82964) %>%
+#   dplyr::select(team,
+#     release_cases    = n_test_cases,
+#     release_failures = total_failures,
+#     release_catch_rate = catch_rate,
+#     release_signal   = signal_score,
+#     release_pct_zero = pct_zero_catch
+#   )
 
 # All quarters — mature + forecast — for trend comparison
 all_quarters <- c(mature_q, FORECAST_Q)
@@ -645,8 +642,8 @@ team_scorecard <- forecast_by_component %>%
     .groups = "drop"
   ) %>%
   # Routine-based test signals — same values for all quarters (point-in-time)
-  left_join(acceptance_signal, by = "team") %>%
-  left_join(release_signal_df, by = "team") %>%
+  # left_join(acceptance_signal, by = "team") %>%
+  # left_join(release_signal_df, by = "team") %>%
   mutate(
     release_label = quarter,
     lpp_lpd_ratio = round(ifelse(lpd_count > 0, lpp_count / lpd_count, NA_real_), 2),
