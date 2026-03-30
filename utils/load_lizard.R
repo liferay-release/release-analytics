@@ -23,15 +23,15 @@ log_info("=== load_lizard.R started ===")
 # Config
 # -----------------------------------------------------------------------------
 cfg         <- yaml::read_yaml("config/config.yml")
-lizard_path <- "/data/lizard_output_20250323.csv"
+lizard_path <- "data/lizard_output_20250323.csv"
 
 con <- dbConnect(
   RPostgres::Postgres(),
-  host     = cfg$db$host,
-  port     = cfg$db$port,
-  dbname   = cfg$db$dbname,
-  user     = cfg$db$user,
-  password = cfg$db$password
+  host     = cfg$databases$release_analytics$host,
+  port     = cfg$databases$release_analytics$port,
+  dbname   = cfg$databases$release_analytics$dbname,
+  user     = cfg$databases$release_analytics$user,
+  password = cfg$databases$release_analytics$password
 )
 log_info("DB connection established")
 
