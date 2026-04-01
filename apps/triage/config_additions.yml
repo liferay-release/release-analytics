@@ -1,0 +1,43 @@
+# config.yml — additions for apps/triage
+#
+# Add these blocks to your existing config.yml.
+# The 'database' block may already exist — only add 'testray_database' and
+# 'triage' if not already present. Never commit credentials to git.
+
+# Existing block — verify these are already set
+database:
+  host: localhost
+  port: 5432
+  name: release_analytics
+  user: your_user         # ← already in your config
+  password: your_password # ← already in your config
+
+# New block — Testray database
+testray_database:
+  host: localhost
+  port: 5432
+  name: testray_working_db
+  user: your_user
+  password: your_password
+
+# New block — triage settings
+triage:
+  git_repo_path: ~/dev/projects/github/liferay-portal
+  anthropic_api_key: your_anthropic_api_key   # or set ANTHROPIC_API_KEY env var
+  model: claude-sonnet-4-20250514
+  max_tokens_per_batch: 24000
+  output_dir: apps/triage/output
+  # Errors matching these patterns are auto-classified without calling Claude
+  # Saves API cost on obvious env/infra failures
+  auto_classify_patterns:
+    BUILD_FAILURE:
+      - "The build failed prior to running the test"
+    ENV_CHROME:
+      - "chrome=100.0"
+      - "Session info: chrome=1"
+    ENV_DEPENDENCY:
+      - "org.tensorflow"
+      - "repository-cdn.liferay.com"
+    ENV_DATE:
+      - "data-startdate,'11/05/2025'"
+      - "data-startdate,'11/06/2025'"
