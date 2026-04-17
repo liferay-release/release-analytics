@@ -1,0 +1,166 @@
+---
+name: ops
+description: >
+  Release Team operational scripts under `ops/` — vendored from the
+  `release-team-scripts` repo. Trigger this skill when the user
+  mentions bundle validation, QA Analysis task, Build task, release
+  candidate, Jira sub-task creation, fillQaAnalysisJiraTask,
+  getLpsFromLocalRepo, updateBuildSubTask, tickets-in-release,
+  ticketList.txt, upgrade_databases, parallel_upgrades, mysql_database_upgrade,
+  liferay_utils, .jira_user/, Brian Wulbern, David Gutierrez Mesa,
+  customer dumps (Cuscal, Tokio Marine, APCOA, e5a2, TU Delft),
+  patching-tool layout, osgi/portal canary jars, or any script under
+  `ops/`. These are human-run tools distinct from the analytics pipeline.
+---
+
+# ops/ — Release Operations Scripts
+
+Day-to-day Release Team scripts. **Not** part of the scheduled
+analytics pipeline (`run_pipeline.sh`) and **not** part of the
+dashboards. Run by humans during a release cycle.
+
+## What lives where
+
+| Folder | Purpose | Primary entry point |
+|---|---|---|
+| `ops/analyze_build/` | Placeholder. Empty today. | — |
+| `ops/bundle_validation/` | Post-release bundle QA | `validationScript.sh <version>` |
+| `ops/release_jira/` | Jira parent-task automation | `fillQaAnalysisJiraTask.py`, `updateBuildSubTask.py` |
+| `ops/tickets_in_release/` | Git-range → JQL | `tickets-in-release.sh <prev> <new>` |
+| `ops/upgrades/` | Customer dump upgrade harness | `parallel_upgrades.sh` (interactive) |
+| `ops/utils/` | Shared `liferay_utils` Python package | Imported by `release_jira/` |
+
+## Key conventions
+
+- **External authors.** `ops/upgrades/` is maintained by Brian Joyner
+  Wulbern; `ops/utils/` is MIT-licensed and authored by David
+  Gutierrez Mesa. Keep `# Author:` / `# VERSION:` headers and the
+  `LICENSE` file intact. Bump the `VERSION:` line when changing
+  behavior.
+- **Credentials.** `ops/release_jira/` scripts read from
+  `~/.jira_user/` (encrypted via `pycryptodome`), **not** from
+  `config/config.yml`. `config/config.yml` is used by the analytics
+  pipeline only.
+- **Release lead is hardcoded.** `ops/release_jira/release_constants.py`
+  sets `Roles.Release_lead = 'bahar.turk'`. All four Python scripts
+  assign tickets to this user. Flag if it needs to change.
+- **Python path hack.** `ops/release_jira/` scripts use
+  `sys.path.append(os.path.join(sys.path[0], '..', 'utils'))` to pick
+  up `liferay_utils`. Run from `ops/release_jira/` directly — running
+  from the project root breaks the relative import.
+- **Bash scripts assume a working directory.**
+  - `bundle_validation/validationScript.sh` must run from a folder
+    containing an unzipped `liferay-dxp/`.
+  - `upgrades/parallel_upgrades.sh` must run from the folder
+    containing customer dump files.
+
+## Bundle validation (`ops/bundle_validation/`)
+
+`validationScript.sh <version>` — appends `PASSED:`/`FAILED:` lines to
+`<version>validation.txt`. Covers:
+
+- Copyright header (LGPL-2.1 / Liferay EULA — **year is hardcoded**;
+  update `check_copyright` each January)
+- `.githash`, `.liferay-home`, empty `deploy/`, empty `logs/`
+- OSGi: `osgi/state/org.eclipse.osgi/`, `osgi/marketplace/override/`
+  has only a README, `osgi/modules/` empty
+- Five canary jars in `osgi/portal/`: `users.admin.web`,
+  `site.initializer.welcome`, `portal.search`, `content.dashboard.web`,
+  `commerce.frontend.impl`
+- `mysql.jar` **absent** from `tomcat/lib/` (licensing)
+- Patching-tool folder layout (6 entries)
+- Tomcat startup log matches `Liferay Digital Experience Platform ${version} (${current_month}, ${current_year})`
+
+Quirk: `check_lts_version` writes to `${1}validation.txt` where `${1}`
+is the full version string. So the artifact filename literally
+includes the version (`2026.Q1.1-ltsvalidation.txt`). Preserve.
+
+## Release Jira automation (`ops/release_jira/`)
+
+JQL templates (from `release_constants.py`):
+
+- QA Analysis: `project = "PUBLIC - Liferay Product Delivery" AND summary ~ "{release_version} QA Analysis"`
+- Build: `project = "PUBLIC - Liferay Product Delivery" AND summary ~ "{release_version} Build"`
+
+| Script | What it does |
+|---|---|
+| `fillQaAnalysisJiraTask.py` | Finds QA Analysis parent, walks git `start..end`, creates LPD sub-tasks (via `getLpsFromLocalRepo`), writes parent key to `PARENT_TASK.txt`, assigns + transitions to In Progress |
+| `getLpsFromLocalRepo.py` | Lists LPS/LPD tickets from commits, filters to Bug type, optionally creates related sub-tasks under an LPD parent |
+| `getAllTicketsFromLocalRepo.py` | Read-only version — prints unique ticket IDs between two hashes |
+| `updateBuildSubTask.py` | Finds Build parent, adds RC URL as comment, assigns + transitions |
+
+All four mutate Jira when run against real credentials. No dry-run
+flag — review args carefully before executing.
+
+## Upgrade harness (`ops/upgrades/`)
+
+Prefer `parallel_upgrades.sh` (v2.1.0) for interactive work. The
+others (`upgrade_databases*.sh`) are earlier or customer-specific
+variants kept for parity.
+
+Menu flow:
+
+```
+1. Setup & Import: SQL Server
+2. Setup & Import: MySQL
+3. Setup & Import: PostgreSQL
+4. Setup & Import: Oracle
+5. Upgrade Existing Imported Database...
+6. Stop/Drop Database Containers...
+```
+
+Each DB import starts a Docker container (`mysql_db`,
+`postgresql_db`, `oracle_db`, `sqlserver_db`), loads the dump,
+points a local portal upgrade tool at the container, runs
+`db_upgrade_client.sh -j "-Dfile.encoding=UTF-8 -Duser.timezone=GMT -Xmx4096m"`.
+
+Customer dumps baked in: Cuscal, Tokio Marine, APCOA, e5a2, TU Delft
+(with MODL codes). Add new customers by editing the
+`dump_names`/`dump_files` arrays or the top-level case branch.
+
+**Destructive:** the "Stop/Drop" menu offers
+`docker system prune -a --volumes -f` — global prune, not scoped to
+this script's containers. Flag if the user is about to pick it.
+
+**Hardcoded local-sandbox passwords:** SQL Server `R00t@1234`,
+Oracle `LportalPassword123`. Never promote to shared infra.
+
+## Non-interactive MySQL helper (`ops/upgrades/mysql_database_upgrade.sh`)
+
+```bash
+bash mysql_database_upgrade.sh <action> <db_type> <target_db> <dump_file>
+# action: export | import | stop
+# db_type: mysql (only supported)
+```
+
+Call from CI or wrapper scripts when menu-driven flow is not suitable.
+
+## Tickets in release (`ops/tickets_in_release/`)
+
+```bash
+bash ops/tickets_in_release/tickets-in-release.sh <prev_ref> <new_ref> [--repo <path>]
+```
+
+Reads `git.repo_path` from `config/config.yml` (or `--repo` override).
+Extracts unique ticket IDs from commit subjects between refs,
+normalizes branch-style prefixes (`LPD-79852-release-2026.q1`
+→ `LPD-79852`), writes to `output/ticketList.txt`, prints pre-built
+JQL for bug audit + security vulnerability audit. JQL is hardcoded
+to `project = LPD`; non-LPD tickets are listed in the artifact but
+excluded from JQL.
+
+## Shared utils (`ops/utils/liferay_utils/`)
+
+- `jira_liferay.get_jira_connection()` — reads `~/.jira_user/`, returns `JIRA(...)` bound to `https://liferay.atlassian.net` (Cloud)
+- `manageCredentialsCrypto.get_credentials()` — RSA-2048 / PKCS1_OAEP encryption of Jira API token; prompts on first run
+- `jira_helpers.get_all_issues(jira, jql, fields)` — paginated issue enumeration
+- `jira_helpers.initialize_subtask_patch_release(parent, summary)` — sub-task template used by `getLpsFromLocalRepo.py`
+- `jira_constants.CustomField` — Liferay-Cloud-specific custom field IDs (`customfield_10211` Fix Priority, `customfield_10227` QA Engineer, etc.)
+- `sheets/*` — Google Sheets v4 API helpers; auth via `~/.testmap_user/credentials.json` + `../token.json`
+
+## When to ask before acting
+
+- **Changing release lead** in `release_constants.py` — affects every Jira assignment
+- **Editing upgrade scripts** — destructive Docker ops, shared customer dump expectations
+- **Creating Jira issues at scale** — `getLpsFromLocalRepo.py` with an `lpd_parent` will create one sub-task per commit
+- **Bumping `liferay_utils` dependency pins** — no tests; validate against non-prod Jira / a throwaway LPD ticket first

@@ -1,10 +1,11 @@
 # Liferay Release Analytics
 
-Release analytics for Liferay DXP. The platform serves three distinct use cases:
+Release analytics for Liferay DXP. The platform serves four distinct use cases:
 
 - **Dashboard pipeline:** Export analysis-ready CSVs that power Looker Studio dashboards for release planning and post-release review.
 - **Branch risk scoring:** Evaluate a pull request against a local portal checkout and return a composite risk score before merge.
 - **Ad hoc analysis:** Query the PostgreSQL database directly, or run standalone R scripts, for deeper investigation — complexity trends, LDA topic modeling, fix management conflict analysis, Testray new test failures.
+- **Release operations:** Day-to-day Release Team scripts — bundle validation, Jira parent-task automation, customer-dump upgrade harness, ticket-range extraction. See [`ops/`](ops/README.md).
 
 ---
 
@@ -135,6 +136,27 @@ Longer term, classified failure results feed into `pr_outcomes` in Release Analy
 
 ---
 
+## Release Operations (`ops/`)
+
+Scripts the Release Team runs by hand during a release cycle. Vendored
+in from the `release-team-scripts` repo so everything runs from one
+place. **Not** part of the scheduled analytics pipeline.
+
+| Folder | What it does |
+|---|---|
+| [`ops/bundle_validation/`](ops/bundle_validation/README.md) | Smoke-test an unzipped DXP bundle: copyright header, `.githash`, `.liferay-home`, OSGi state, canary portal jars, missing `mysql.jar`, patching-tool layout, Tomcat startup log. |
+| [`ops/release_jira/`](ops/release_jira/README.md) | Python automation for the "QA Analysis" and "Build" parent tasks in Jira. Enumerates tickets between two git hashes, creates LPD sub-tasks, transitions status, assigns release lead. |
+| [`ops/tickets_in_release/`](ops/tickets_in_release/README.md) | Extract unique Jira ticket IDs from commits between two refs and emit ready-to-paste JQL for release bug / security audits. |
+| [`ops/upgrades/`](ops/upgrades/README.md) | Interactive Docker harness for importing customer database dumps (MySQL / PostgreSQL / Oracle / SQL Server) and running `db_upgrade_client.sh` against them. Used to reproduce customer upgrade issues before GA. |
+| [`ops/utils/`](ops/utils/README.md) | Shared `liferay_utils` Python package — Jira connection factory, encrypted `~/.jira_user/` credentials, Google Sheets / testmap helpers. Dependency of the `ops/release_jira/` scripts. |
+| [`ops/analyze_build/`](ops/analyze_build/README.md) | Placeholder for future build-analysis tooling. |
+
+Jira credentials for `ops/release_jira/` live in `~/.jira_user/`
+(encrypted via `pycryptodome`) — separate from `config/config.yml`,
+which is only read by the analytics pipeline.
+
+---
+
 ## Data Sources
 
 | Source | What We Pull | How |
@@ -195,6 +217,13 @@ liferay-release-analytics/
 │   └── scoring/                    # Branch risk scoring engine (standalone)
 │       ├── evaluate_pr.sh
 │       └── evaluate_pr.R
+├── ops/                            # Release Team operational scripts (human-run)
+│   ├── analyze_build/              # Placeholder for future build-analysis tooling
+│   ├── bundle_validation/          # Post-release bundle QA (copyright, .githash, OSGi, startup)
+│   ├── release_jira/               # Python automation for QA Analysis / Build parent tasks
+│   ├── tickets_in_release/         # Extract ticket IDs + JQL between two git refs
+│   ├── upgrades/                   # Docker-based MySQL/PG/Oracle/SQLServer upgrade harness
+│   └── utils/                      # Shared liferay_utils Python package
 └── staging/                        # Intermediate pipeline files (gitignored)
 ```
 

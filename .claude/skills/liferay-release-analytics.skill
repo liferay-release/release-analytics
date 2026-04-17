@@ -21,6 +21,11 @@ This skill covers three active workstreams. Jump to the relevant section.
 - [Fix Management Analysis](#fix-management-analysis)
 - [Testray Triage Pipeline](#testray-triage-pipeline)
 
+For Release Team **operational** scripts (bundle validation, Jira task
+automation, upgrade harness, ticket-range extraction) — see the
+separate `ops.skill`. Those are human-run tools, distinct from the
+analytics pipeline covered here.
+
 ---
 
 ## RAP Pipeline & Dashboards
