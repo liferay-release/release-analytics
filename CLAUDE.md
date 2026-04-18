@@ -227,3 +227,51 @@ and run by humans, not the scheduled pipeline. When editing:
 - `.claude/skills/ops.skill` — Release Team operational scripts under
   `ops/`: bundle validation, Jira parent-task automation, upgrade harness,
   ticket-range extraction, shared `liferay_utils` package
+
+## Setup (new teammates — read this first)
+
+When someone runs `claude` in this repo for the first time, check
+whether their environment is ready by verifying these four things.
+If any check fails, offer to walk through the fix interactively
+before doing anything else.
+
+### Check 1 — Database running
+```bash
+docker compose ps
+```
+Expect `release_analytics_db` with status `healthy`.
+If not running: `docker compose up -d` and wait ~10 seconds.
+
+### Check 2 — config/config.yml exists
+```bash
+ls config/config.yml
+```
+If missing: `cp config/config.yml.example config/config.yml`
+Then prompt the user to fill in DB, Jira, and Testray credentials.
+See `docs/SETUP.md` for the credential guide.
+
+### Check 3 — R packages installed
+```r
+renv::status()
+```
+If packages are missing: `renv::restore()`
+
+### Check 4 — DB connection works
+```r
+source("config/release_analytics_db.R")
+con <- get_db_connection()
+DBI::dbGetQuery(con, "SELECT 1")
+```
+If this fails, the most common causes are:
+- Docker not running (Check 1)
+- Wrong credentials in config.yml (Check 2)
+- R packages not installed (Check 3)
+
+### After checks pass
+Tell the user their environment is ready and ask what they want to
+work on. Suggest starting points:
+- "Run me through the pipeline" → explain extract/ → transform/ → utils/
+- "I want to work on triage" → open apps/triage/, load triage.skill
+- "Show me the dashboards" → explain reports/ and export_looker.R flow
+
+Full setup guide: `docs/SETUP.md`

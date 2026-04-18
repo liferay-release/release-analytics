@@ -1,0 +1,39 @@
+# docker-compose.yml — release-analytics local development database
+#
+# Usage:
+#   docker compose up -d       start the database in the background
+#   docker compose down        stop (data persists in rap_db_data volume)
+#   docker compose down -v     stop and delete all data (clean slate)
+#
+# After first run, schema is applied automatically from db/schema.sql.
+# Subsequent starts reuse the existing volume — schema does not re-run.
+#
+# Connection string for config/config.yml:
+#   host: localhost
+#   port: 5432
+#   dbname: release_analytics
+#   user: rap_user
+#   password: changeme_local   ← local dev only, never use in production
+
+services:
+  db:
+    image: postgres:14
+    container_name: release_analytics_db
+    environment:
+      POSTGRES_DB: release_analytics
+      POSTGRES_USER: rap_user
+      POSTGRES_PASSWORD: changeme_local
+    ports:
+      - "5432:5432"
+    volumes:
+      - ./db/schema.sql:/docker-entrypoint-initdb.d/01_schema.sql
+      - rap_db_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U rap_user -d release_analytics"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+volumes:
+  rap_db_data:
+    name: rap_db_data
