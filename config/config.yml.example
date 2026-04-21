@@ -8,9 +8,9 @@ databases:
   testray:
     host: localhost
     port: 5432
-    dbname: testray_working_db
-    user: 
-    password: 
+    dbname: testray_analytical
+    user:
+    password:
 
 git:
   repo_path: 

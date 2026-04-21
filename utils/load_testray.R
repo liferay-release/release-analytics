@@ -1,28 +1,21 @@
 # =============================================================================
 # load_testray.R
-# Loads Testray case results from local testray_working_db into fact_test_quality.
+# Loads Testray case results from testray_analytical into fact_test_quality.
 #
-# Replaces: extract_testray.R (API) + transform_test_risk.R
+# Previously: queried raw o_22235989312226_* tables in testray_working_db.
+# Now:        queries caseresult_analytical — denormalized, project-scoped,
+#             names resolved inline.
 #
 # Routines:
 #   590307 — EE Development Acceptance (master)  [daily gate]
 #   82964  — EE Package Tester                   [pre-ship release gate]
 #
 # Grain: case × routine × window_quarter
-#   One row per test case per routine per release dev window.
-#   Enables pass rate trends across releases:
-#     pass_rate = (total_builds - total_fail_builds) / total_builds * 100
 #
-# Logic:
-#   - Reads dev_windows from config.yml (same windows used for Jira quarter assignment)
-#   - For each window, pulls builds where startdate_ falls within dev_start → dev_end
-#   - Filters to clean builds only (build-level pass rate >= 50%)
-#   - Aggregates to case × routine × window_quarter grain
-#   - Upserts into fact_test_quality on (case_id, routine_id, window_quarter)
-#
-# Coverage note:
-#   Testray backup covers builds from ~2024-09 (Acceptance) and ~2024-08 (Release).
-#   Windows before 2025.Q1 will have sparse or zero data — expected.
+# Filters:
+#   Acceptance (590307): builds where pass rate >= 50%  (daily gate noise filter)
+#   Release (82964):     builds where promoted_ = TRUE  (ship gate — authoritative only)
+#   Windows: excluded if overall pass rate < 60% (CI/infra instability)
 #
 # Run after:  load_module_component_map.R
 # Run before: export_looker.R
@@ -46,7 +39,7 @@ log_info("=== load_testray.R started ===")
 cfg <- read_yaml("config/config.yml")
 
 # -----------------------------------------------------------------------------
-# Two connections — one per DB
+# Connections
 # -----------------------------------------------------------------------------
 db_connect <- function(db_cfg) {
   DBI::dbConnect(
@@ -75,11 +68,10 @@ TARGET_ROUTINES <- list(
   list(id = 590307L, name = "EE Development Acceptance (master)"),
   list(id = 82964L,  name = "EE Package Tester")
 )
-MIN_PASS_RATE       <- 0.50
-FAILURE_STATUSES    <- c("FAILED", "BLOCKED", "UNTESTED", "TESTFIX")
-EXCLUDED_COMPONENTS <- c("A/B Test", "License", "Smoke")
+WINDOW_MIN_PASS_RATE <- 0.60
+FAILURE_STATUSES     <- c("FAILED", "BLOCKED", "UNTESTED", "TESTFIX")
+EXCLUDED_COMPONENTS  <- c("A/B Test", "License", "Smoke")
 
-routine_ids_sql <- paste(sapply(TARGET_ROUTINES, `[[`, "id"), collapse = ", ")
 routine_name_map <- tibble(
   routine_id   = as.integer(sapply(TARGET_ROUTINES, `[[`, "id")),
   routine_name = sapply(TARGET_ROUTINES, `[[`, "name")
@@ -92,7 +84,7 @@ dev_windows <- bind_rows(lapply(cfg$jira$dev_windows, as.data.frame)) %>%
     dev_end   = as.Date(dev_end)
   )
 
-# Add 2026.Q2 if IN_DEVELOPMENT but not yet in config dev_windows
+# Add 2026.Q2 if IN_DEVELOPMENT but not yet in config
 q2_check <- dbGetQuery(con, "
   SELECT release_label FROM dim_release
   WHERE release_label = '2026.Q2' AND release_status = 'IN_DEVELOPMENT'
@@ -108,70 +100,62 @@ if (nrow(q2_check) > 0 && !("2026.Q2" %in% dev_windows$quarter)) {
 }
 
 log_info("Dev windows: {nrow(dev_windows)} quarters ({min(dev_windows$quarter)} to {max(dev_windows$quarter)})")
-log_info("Routines: {paste(sapply(TARGET_ROUTINES, function(r) paste0(r$id, ' (', r$name, ')')), collapse = ', ')}")
-log_info("Min pass rate filter: {MIN_PASS_RATE * 100}%%")
-
-# Table names
-BUILD      <- "o_22235989312226_build"
-CASERESULT <- "o_22235989312226_caseresult"
-CASE_TBL   <- "o_22235989312226_case"
-COMPONENT  <- "o_22235989312226_component"
-TEAM       <- "o_22235989312226_team"
-CASETYPE   <- "o_22235989312226_casetype"
 
 # -----------------------------------------------------------------------------
-# Step 1 — Pull ALL clean builds with their start date
-#   startdate_ used to assign builds to dev windows in R
+# Step 1 — Pull clean builds from caseresult_analytical
+#   Acceptance (590307): builds with pass rate >= 50% (daily noise filter)
+#   Release (82964):     builds with promoted_ = TRUE (ship gate)
 # -----------------------------------------------------------------------------
-log_info("Step 1: pulling all clean builds with dates")
+log_info("Step 1: pulling clean builds")
 
-# Acceptance (590307): daily gate — filter by pass rate >= 50%
-# Release (82964):     ship gate — filter to promoted_ = TRUE only
-acceptance_builds <- dbGetQuery(con_testray, sprintf("
-  SELECT
-    c_buildid_                      AS build_id,
-    r_routinetobuilds_c_routineid   AS routine_id,
-    DATE(duedate_)                  AS build_date
-  FROM %s
-  WHERE r_routinetobuilds_c_routineid = 590307
-    AND duedate_ IS NOT NULL
-    AND (
-      caseresultpassed_::numeric /
-      NULLIF(caseresultpassed_ + caseresultfailed_, 0)
-    ) >= %s
-", BUILD, MIN_PASS_RATE))
+acceptance_builds <- dbGetQuery(con_testray, "
+  WITH build_stats AS (
+    SELECT
+      build_id,
+      routine_id,
+      MIN(build_date)                                       AS build_date,
+      COUNT(*)                                              AS total_results,
+      SUM(CASE WHEN status = 'PASSED' THEN 1 ELSE 0 END)    AS passed_count
+    FROM caseresult_analytical
+    WHERE routine_id = 590307
+    GROUP BY build_id, routine_id
+  )
+  SELECT build_id, routine_id, build_date
+  FROM build_stats
+  WHERE total_results > 0
+    AND passed_count::numeric / NULLIF(total_results, 0) >= 0.50
+")
 
-release_builds <- dbGetQuery(con_testray, sprintf("
-  SELECT
-    c_buildid_                      AS build_id,
-    r_routinetobuilds_c_routineid   AS routine_id,
-    DATE(duedate_)                  AS build_date
-  FROM %s
-  WHERE r_routinetobuilds_c_routineid = 82964
-    AND duedate_ IS NOT NULL
-    AND promoted_ = TRUE
-", BUILD))
+release_builds <- dbGetQuery(con_testray, "
+  SELECT DISTINCT
+    build_id,
+    routine_id,
+    build_date
+  FROM caseresult_analytical
+  WHERE routine_id = 82964
+    AND build_promoted = TRUE
+")
 
 all_builds <- bind_rows(acceptance_builds, release_builds)
 
-log_info("Acceptance builds (pass rate >= {MIN_PASS_RATE * 100}%%): {nrow(acceptance_builds)}")
+log_info("Acceptance builds (pass rate >= 50%%): {nrow(acceptance_builds)}")
 log_info("Release builds (promoted only): {nrow(release_builds)}")
+log_info("Total builds: {nrow(all_builds)}")
 
-log_info("Total clean builds: {nrow(all_builds)}")
-for (r in TARGET_ROUTINES) {
-  log_info("  Routine {r$id} ({r$name}): {sum(all_builds$routine_id == r$id)} builds")
+if (nrow(all_builds) == 0) {
+  log_error("No builds found — check testray_analytical connection")
+  stop("No builds to process")
 }
 
 # Assign each build to a dev window — vectorized cross join + filter
-# Much faster than rowwise() on large build sets
 all_builds <- all_builds %>%
   left_join(
     dev_windows %>% rename(window_quarter = quarter),
-    by = character()  # cross join
+    by = character()
   ) %>%
   filter(build_date >= dev_start & build_date <= dev_end) %>%
   group_by(build_id, routine_id, build_date) %>%
-  slice(1) %>%  # take first matching window if dates overlap
+  slice(1) %>%
   ungroup() %>%
   dplyr::select(build_id, routine_id, build_date, window_quarter)
 
@@ -184,15 +168,8 @@ for (i in seq_len(nrow(window_cov))) {
   log_info("  [{window_cov$window_quarter[i]}] {window_cov$routine_name[i]}: {window_cov$n[i]} builds")
 }
 
-if (nrow(all_builds) == 0) {
-  log_error("No builds assigned to any dev window — check config dev_windows dates")
-  stop("No builds to process")
-}
-
-build_map <- all_builds %>% dplyr::select(build_id, routine_id, window_quarter)
-
 # -----------------------------------------------------------------------------
-# Step 2 — Case results for all clean builds (chunked)
+# Step 2 — Pull case results for selected builds (names already resolved)
 # -----------------------------------------------------------------------------
 log_info("Step 2: pulling case results ({nrow(all_builds)} builds)")
 
@@ -202,80 +179,38 @@ chunks     <- split(all_builds$build_id, ceiling(seq_along(all_builds$build_id) 
 caseresults_raw <- bind_rows(lapply(chunks, function(ids) {
   dbGetQuery(con_testray, sprintf("
     SELECT
-      r_casetocaseresult_c_caseid           AS case_id,
-      r_buildtocaseresult_c_buildid         AS build_id,
-      r_componenttocaseresult_c_componentid AS component_id,
-      r_teamtocaseresult_c_teamid           AS team_id,
-      duestatus_                            AS status,
-      issues_                               AS issues
-    FROM %s
-    WHERE r_buildtocaseresult_c_buildid IN (%s)
-  ", CASERESULT, paste(ids, collapse = ", ")))
+      case_id,
+      build_id,
+      case_name,
+      case_type,
+      component_name,
+      team_name,
+      status,
+      jira_issue
+    FROM caseresult_analytical
+    WHERE build_id IN (%s)
+  ", paste(ids, collapse = ", ")))
 }))
 
 log_info("Raw case results: {nrow(caseresults_raw)}")
 
+build_map <- all_builds %>% dplyr::select(build_id, routine_id, window_quarter)
 caseresults <- caseresults_raw %>%
-  left_join(build_map, by = "build_id")
+  left_join(build_map, by = "build_id") %>%
+  filter(
+    !is.na(case_name),
+    !grepl("modules-compile", case_name, ignore.case = TRUE),
+    !(component_name %in% EXCLUDED_COMPONENTS)
+  )
+
+log_info("After exclusions: {nrow(caseresults)} case results")
 
 # -----------------------------------------------------------------------------
-# Step 3 — Case metadata scoped to seen case IDs
+# Step 3 — Aggregate to case × routine × window_quarter grain
 # -----------------------------------------------------------------------------
-log_info("Step 3: pulling case metadata")
+log_info("Step 3: aggregating to case x routine x window_quarter grain")
 
-seen_ids_sql <- paste(unique(caseresults$case_id), collapse = ", ")
-
-cases <- dbGetQuery(con_testray, sprintf("
-  SELECT
-    c.c_caseid_                        AS case_id,
-    c.name_                            AS case_name,
-    c.flaky_                           AS flaky,
-    c.priority_                        AS priority,
-    ct.name_                           AS case_type
-  FROM %s c
-  LEFT JOIN %s ct ON ct.c_casetypeid_ = c.r_casetypetocases_c_casetypeid
-  WHERE c.c_caseid_ IN (%s)
-", CASE_TBL, CASETYPE, seen_ids_sql)) %>%
-  filter(!grepl("modules-compile", case_name, ignore.case = TRUE))
-
-log_info("Cases loaded: {nrow(cases)}")
-
-# -----------------------------------------------------------------------------
-# Step 4 — Component and team lookups
-# -----------------------------------------------------------------------------
-log_info("Step 4: pulling component and team lookups")
-
-components <- dbGetQuery(con_testray, sprintf(
-  "SELECT c_componentid_ AS component_id, name_ AS component_name FROM %s", COMPONENT
-))
-teams <- dbGetQuery(con_testray, sprintf(
-  "SELECT c_teamid_ AS team_id, name_ AS team_name FROM %s", TEAM
-))
-
-# -----------------------------------------------------------------------------
-# Step 5 — Join and filter
-# -----------------------------------------------------------------------------
-log_info("Step 5: joining lookups")
-
-cr <- caseresults %>%
-  inner_join(cases,     by = "case_id") %>%
-  left_join(components, by = "component_id") %>%
-  left_join(teams,      by = "team_id") %>%
-  filter(!component_name %in% EXCLUDED_COMPONENTS)
-
-log_info("After joins and exclusions: {nrow(cr)} case results")
-
-# -----------------------------------------------------------------------------
-# Step 6 — Aggregate to case × routine × window_quarter grain
-#
-# total_builds      = distinct builds this test case ran in within the window
-# total_fail_builds = builds where status is a failure status
-# pass_rate         = NOT stored — computed at export time:
-#                     (total_builds - total_fail_builds) / total_builds * 100
-# -----------------------------------------------------------------------------
-log_info("Step 6: aggregating to case x routine x window_quarter grain")
-
-aggregated <- cr %>%
+aggregated <- caseresults %>%
   group_by(case_id, routine_id, window_quarter) %>%
   summarise(
     case_name            = first(case_name),
@@ -286,12 +221,12 @@ aggregated <- cr %>%
     total_fail_builds    = sum(status %in% FAILURE_STATUSES),
     bug_linked_builds    = sum(
                              status %in% FAILURE_STATUSES &
-                             !is.na(issues) & nchar(trimws(issues)) > 0
+                             !is.na(jira_issue) & nchar(trimws(jira_issue)) > 0
                            ),
     distinct_bugs_linked = n_distinct(
-                             issues[
+                             jira_issue[
                                status %in% FAILURE_STATUSES &
-                               !is.na(issues) & nchar(trimws(issues)) > 0
+                               !is.na(jira_issue) & nchar(trimws(jira_issue)) > 0
                              ]
                            ),
     .groups = "drop"
@@ -317,20 +252,10 @@ aggregated <- cr %>%
   )
 
 log_info("Aggregated: {nrow(aggregated)} case x routine x window rows")
-for (r in TARGET_ROUTINES) {
-  n_rows    <- sum(aggregated$routine_id == r$id)
-  n_windows <- n_distinct(aggregated$window_quarter[aggregated$routine_id == r$id])
-  log_info("  Routine {r$id} ({r$name}): {n_rows} rows across {n_windows} windows")
-}
 
 # -----------------------------------------------------------------------------
-# Step 7 — Filter low-quality windows, then upsert into fact_test_quality
-# Windows where overall pass rate < 60% are excluded — these typically indicate
-# CI/infrastructure failures rather than real code quality signal. Teams usually
-# re-run in these cases so the data is not representative.
+# Step 4 — Filter low-quality windows
 # -----------------------------------------------------------------------------
-WINDOW_MIN_PASS_RATE <- 0.60
-
 window_pass_rates <- aggregated %>%
   group_by(routine_id, window_quarter) %>%
   summarise(
@@ -349,12 +274,13 @@ if (nrow(low_quality_windows) > 0) {
   }
   aggregated <- aggregated %>%
     anti_join(low_quality_windows, by = c("routine_id", "window_quarter"))
-  log_info("Rows after low-quality window exclusion: {nrow(aggregated)}")
-} else {
-  log_info("All windows passed quality threshold (pass_rate >= {WINDOW_MIN_PASS_RATE * 100}%%)")
+  log_info("Rows after exclusion: {nrow(aggregated)}")
 }
 
-log_info("Step 7: upserting into fact_test_quality")
+# -----------------------------------------------------------------------------
+# Step 5 — Upsert
+# -----------------------------------------------------------------------------
+log_info("Step 5: upserting into fact_test_quality")
 
 dbWriteTable(con, "tmp_test_quality", aggregated,
              temporary = TRUE, overwrite = TRUE)
@@ -399,9 +325,9 @@ dbExecute(con, "DROP TABLE IF EXISTS tmp_test_quality")
 log_info("Upserted: {rows_upserted} rows")
 
 # -----------------------------------------------------------------------------
-# Step 8 — Validation: pass rate by routine × window
+# Step 6 — Validation
 # -----------------------------------------------------------------------------
-log_info("Step 8: validation")
+log_info("Step 6: validation")
 
 val <- dbGetQuery(con, "
   SELECT
@@ -416,7 +342,6 @@ val <- dbGetQuery(con, "
       (SUM(total_builds) - SUM(total_fail_builds))::NUMERIC /
       NULLIF(SUM(total_builds), 0) * 100, 1
     )                                                     AS pass_rate_pct,
-    ROUND(AVG(investigation_rate)::NUMERIC, 4)            AS avg_investigation_rate,
     MAX(calculated_at)                                    AS last_updated
   FROM fact_test_quality
   WHERE routine_id IS NOT NULL
