@@ -91,6 +91,27 @@ WHERE r.r_routinetoprojects_c_projectid IN (135537960, 3020904, 456316917, 35392
 ALTER TABLE dim_routine ADD PRIMARY KEY (routine_id);
 CREATE INDEX idx_dim_routine_project ON dim_routine (project_id);
 
+CREATE TABLE dim_build AS
+SELECT
+    b.c_buildid_                        AS build_id,
+    b.name_                             AS build_name,
+    DATE(b.duedate_)                    AS build_date,
+    b.duedate_                          AS build_datetime,
+    b.githash_                          AS git_hash,
+    b.duestatus_                        AS build_status,
+    b.promoted_                         AS build_promoted,
+    b.r_routinetobuilds_c_routineid     AS routine_id,
+    dr.project_id                       AS project_id
+FROM fdw_src.o_22235989312226_build b
+JOIN dim_routine dr ON dr.routine_id = b.r_routinetobuilds_c_routineid
+WHERE
+    dr.project_id IN (135537960, 3020904, 456316917)
+    OR (dr.project_id = 35392 AND b.duedate_ >= '2026-01-01'::timestamp);
+
+ALTER TABLE dim_build ADD PRIMARY KEY (build_id);
+CREATE INDEX idx_dim_build_routine ON dim_build (routine_id);
+CREATE INDEX idx_dim_build_date    ON dim_build (build_date);
+
 CREATE TABLE dim_case_type AS
 SELECT
     c_casetypeid_ AS case_type_id,
@@ -202,6 +223,7 @@ CREATE INDEX idx_cra_proj_rout_date ON caseresult_analytical (project_id, routin
 ANALYZE caseresult_analytical;
 ANALYZE dim_project;
 ANALYZE dim_routine;
+ANALYZE dim_build;
 ANALYZE dim_case_type;
 ANALYZE dim_team;
 ANALYZE dim_component;
@@ -231,6 +253,7 @@ ORDER BY project_id;
 \echo 'Dim table row counts:'
 SELECT 'dim_project'    AS tbl, COUNT(*) AS n FROM dim_project
 UNION ALL SELECT 'dim_routine',   COUNT(*) FROM dim_routine
+UNION ALL SELECT 'dim_build',     COUNT(*) FROM dim_build
 UNION ALL SELECT 'dim_case_type', COUNT(*) FROM dim_case_type
 UNION ALL SELECT 'dim_team',      COUNT(*) FROM dim_team
 UNION ALL SELECT 'dim_component', COUNT(*) FROM dim_component;

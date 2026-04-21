@@ -110,7 +110,7 @@ fi
 # ---------------------------------------------------------------------------
 # Step 1: test_diff — query Testray
 # ---------------------------------------------------------------------------
-log "Step 1/5: Running test_diff.sql against testray_working_db..."
+log "Step 1/5: Running test_diff.sql against testray_analytical..."
 
 python3 - <<PYEOF
 import pandas as pd

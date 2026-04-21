@@ -38,7 +38,7 @@
 #   - Non-functional case types (Batch, Compile, Semantic Versioning, etc.)
 #   - 29% of raw failures were infrastructure noise — excluded from all analysis
 #
-# Input:  testray_working_db.caseresult_working
+# Input:  testray_analytical.caseresult_analytical
 #         db/cofailure_pairs.sql (co-failure computation)
 # Output: fact_component_cofailure (release_analytics)
 #         fact_test_quality        (release_analytics)
@@ -91,7 +91,7 @@ MIN_FAIL_BUILDS <- 10  # minimum builds a test case must fail to qualify for qua
 # -----------------------------------------------------------------------------
 # Step 1 — Component co-failure pairs via SQL
 # Heavy computation delegated to db/cofailure_pairs.sql.
-# Runs against testray_working_db with indexes on caseresult_working.
+# Runs against testray_analytical with indexes on caseresult_analytical.
 # -----------------------------------------------------------------------------
 log_info("Running co-failure SQL (db/cofailure_pairs.sql)...")
 
@@ -108,7 +108,7 @@ cofail_scored |>
 
 # -----------------------------------------------------------------------------
 # Step 2 — Test case quality scores
-# Pulled directly from testray_working_db — stays in R since it is simpler
+# Pulled directly from testray_analytical — stays in R since it is simpler
 # and does not have the join performance problem of co-failure computation.
 # -----------------------------------------------------------------------------
 log_info("Loading failures for test quality scoring...")
@@ -125,7 +125,7 @@ failures <- dbGetQuery(con_testray, sprintf("
     team_name,
     jira_issue,
     start_date
-  FROM caseresult_working
+  FROM caseresult_analytical
   WHERE routine_name IN (%s)
   AND status = 'FAILED'
   AND start_date >= CURRENT_DATE - INTERVAL '365 days'

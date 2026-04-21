@@ -10,7 +10,7 @@ failures AS (
     build_id,
     case_id,
     component_name
-  FROM caseresult_working
+  FROM caseresult_analytical
   WHERE routine_name IN (
     'EE Development Acceptance (master)',
     'EE Development (master)',

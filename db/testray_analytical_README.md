@@ -17,6 +17,7 @@ across 4 projects, ready for sharing and analytical queries.
 | `caseresult_analytical`  | Denormalized case results with all names resolved inline      |
 | `dim_project`            | 4 projects in scope                                           |
 | `dim_routine`            | All routines across the 4 projects                            |
+| `dim_build`              | Build-level metadata — git_hash, build_status, promoted flag  |
 | `dim_case_type`          | Lookup for case_type_id → name                                |
 | `dim_team`               | Lookup for team_id → name                                     |
 | `dim_component`          | Lookup for component_id → name                                |

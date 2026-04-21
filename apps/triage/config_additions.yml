@@ -12,11 +12,11 @@ database:
   user: your_user         # ← already in your config
   password: your_password # ← already in your config
 
-# New block — Testray database
+# New block — Testray database (shareable analytical DB)
 testray_database:
   host: localhost
   port: 5432
-  name: testray_working_db
+  name: testray_analytical
   user: your_user
   password: your_password
 

@@ -19,9 +19,9 @@ Part of the Release Analytics Platform three-app structure:
 ```
 Build A ID + Build B ID (user input via run_triage.sh prompt or --build-a/--build-b flags)
         ↓
-test_diff.sql              → PASSED→FAILED/BLOCKED/UNTESTED from testray_working_db
+test_diff.sql              → PASSED→FAILED/BLOCKED/UNTESTED from testray_analytical
         ↓
-git_hash_lookup.sql        → githash_ for both builds from o_22235989312226_build
+git_hash_lookup.sql        → git_hash for both builds from dim_build
         ↓
 run_triage.sh (git diff)   → full unified diff, source files only, releng noise excluded
         ↓
@@ -43,14 +43,14 @@ store.py                   → upsert into fact_triage_results + log to triage_r
 | File | Purpose |
 |---|---|
 | `run_triage.sh` | **Entry point** — orchestrates all 5 steps |
-| `db.py` | DB connections — release_analytics + testray_working_db |
+| `db.py` | DB connections — release_analytics + testray_analytical |
 | `module_matcher.py` | Maps diff file paths → component/team via dim_module_component_map |
 | `extract_relevant_hunks.py` | Filters full git diff to only triage-relevant hunks |
 | `prompt_builder.py` | Pre-classifies env/infra errors + builds batched Claude prompts |
 | `triage_claude.py` | Anthropic API calls, response parsing, batch merging |
 | `store.py` | fact_triage_results schema + upsert + triage_run_log |
-| `test_diff.sql` | PASSED→FAILED/BLOCKED/UNTESTED query against testray_working_db |
-| `git_hash_lookup.sql` | Fetches githash_ for both builds |
+| `test_diff.sql` | PASSED→FAILED/BLOCKED/UNTESTED query against testray_analytical |
+| `git_hash_lookup.sql` | Fetches git_hash for both builds from dim_build |
 | `config_additions.yml` | Reference for what to add to config/config.yml |
 
 ---
@@ -94,7 +94,7 @@ databases:
   testray:
     host: localhost
     port: 5432
-    dbname: testray_working_db
+    dbname: testray_analytical
     user: release
     password: ...
 ```
@@ -102,7 +102,7 @@ databases:
 ### 3. Testray DB permissions
 
 ```bash
-psql -U postgres -h localhost -d testray_working_db -c \
+psql -U postgres -h localhost -d testray_analytical -c \
   "GRANT SELECT ON ALL TABLES IN SCHEMA public TO release;"
 ```
 

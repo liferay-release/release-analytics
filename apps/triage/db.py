@@ -4,7 +4,7 @@ apps/triage/db.py
 Database connections for the triage app.
 Provides connections to both:
   - release_analytics  (Release Analytics Platform PostgreSQL — dim_module_component_map, dim_component, etc.)
-  - testray_working_db (Testray PostgreSQL — build, caseresult, run, case)
+  - testray_analytical  (Testray PostgreSQL — caseresult_analytical + dim_build)
 
 Credentials are never hardcoded — always read from config.yml.
 Mirrors the config/release_analytics_db.R pattern used in the R pipeline.
@@ -82,14 +82,14 @@ def get_rap_conn():
 @contextmanager
 def get_testray_conn():
     """
-    Context manager for the testray_working_db PostgreSQL database.
+    Context manager for the testray_analytical PostgreSQL database.
 
     config.yml expected shape:
         databases:
           testray:
             host: localhost
             port: 5432
-            dbname: testray_working_db
+            dbname: testray_analytical
             user: your_user
             password: your_password
     """
@@ -97,7 +97,7 @@ def get_testray_conn():
     conn = psycopg2.connect(
         host=cfg.get("host", "localhost"),
         port=int(cfg.get("port", 5432)),
-        dbname=cfg.get("dbname", "testray_working_db"),
+        dbname=cfg.get("dbname", "testray_analytical"),
         user=cfg["user"],
         password=cfg["password"],
     )
