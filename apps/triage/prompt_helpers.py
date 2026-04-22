@@ -13,6 +13,7 @@ Claude Code session), but the matching/pre-classification logic is still
 useful for the new prepare → classify → submit seam.
 """
 
+import csv
 import re
 from functools import lru_cache
 from pathlib import Path
@@ -35,6 +36,61 @@ def load_triage_config() -> dict:
             with open(candidate) as f:
                 return (yaml.safe_load(f) or {}).get("triage", {}) or {}
     return {}
+
+
+@lru_cache(maxsize=1)
+def _find_project_root() -> Path:
+    here = Path(__file__).resolve()
+    for parent in here.parents:
+        if (parent / "config" / "config.yml").exists() or \
+           (parent / "config" / "module_component_map.csv").exists():
+            return parent
+    return here.parents[2]
+
+
+@lru_cache(maxsize=1)
+def load_component_map() -> list[dict]:
+    """
+    Load `config/module_component_map.csv` — authoritative module → testray
+    component + team mapping. Returns a list of dicts with keys:
+      module_path (may be empty for component+team-only rows),
+      testray_component, team_name.
+
+    Triage reads this CSV directly (no DB dependency) so the tool works on a
+    dev laptop without a local release_analytics database.
+    """
+    path = _find_project_root() / "config" / "module_component_map.csv"
+    if not path.exists():
+        return []
+    with open(path) as f:
+        return [dict(r) for r in csv.DictReader(f)]
+
+
+def team_for_component(component_name: str | None) -> str | None:
+    """Reverse-lookup team for a Testray component name. Returns None if unknown."""
+    if not component_name:
+        return None
+    for row in load_component_map():
+        if row.get("testray_component") == component_name and row.get("team_name"):
+            return row["team_name"]
+    return None
+
+
+def resolve_diff_path_to_component(diff_path: str) -> str | None:
+    """
+    Longest-prefix match of a diff path to a testray component via the CSV.
+    Returns component_name or None. Used to check whether a hunk lives in the
+    same component as a failing test.
+    """
+    candidates = sorted(
+        (r for r in load_component_map() if r.get("module_path")),
+        key=lambda r: -len(r["module_path"]),
+    )
+    for row in candidates:
+        mp = row["module_path"]
+        if mp in diff_path:
+            return row.get("testray_component")
+    return None
 
 
 # ---------------------------------------------------------------------------

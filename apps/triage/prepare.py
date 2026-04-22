@@ -210,36 +210,26 @@ def run_extract_hunks(diff_path: Path, fragments_path: Path, out_path: Path) -> 
 # Step 5: component/team enrichment (optional) + pre-classification
 # ---------------------------------------------------------------------------
 
-def enrich_and_pre_classify(df: pd.DataFrame, rap_cfg: dict | None) -> pd.DataFrame:
-    cfg          = prompt_helpers.load_triage_config()
-    extra_pats   = cfg.get("auto_classify_patterns") or {}
+def enrich_and_pre_classify(df: pd.DataFrame) -> pd.DataFrame:
+    cfg        = prompt_helpers.load_triage_config()
+    extra_pats = cfg.get("auto_classify_patterns") or {}
 
     df = df.rename(columns={"testray_component_name": "component_name"}).copy()
 
     if "team_name" not in df.columns:
         df["team_name"] = None
 
-    if rap_cfg:
-        try:
-            team_map = _load_component_team_map(rap_cfg)
-            df["team_name"] = df["component_name"].map(team_map).fillna(df["team_name"])
-        except Exception as e:
-            print(f"WARNING: team_name enrichment skipped ({e})", file=sys.stderr)
+    # CSV-based team_name enrichment (no DB dependency — works on dev laptops
+    # without release_analytics DB).
+    df["team_name"] = df["component_name"].apply(
+        prompt_helpers.team_for_component
+    ).fillna(df["team_name"])
 
     df["pre_classification"] = df["error_message"].apply(
         lambda e: prompt_helpers.pre_classify(e, extra_pats)
     )
 
     return df
-
-
-def _load_component_team_map(rap_cfg: dict) -> dict[str, str]:
-    """Return { component_name: team_name } from dim_component."""
-    with _connect(rap_cfg) as conn:
-        with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
-            cur.execute("SELECT component_name, team_name FROM dim_component")
-            return {r["component_name"]: r["team_name"] for r in cur.fetchall()
-                    if r["component_name"]}
 
 
 # ---------------------------------------------------------------------------
@@ -477,7 +467,6 @@ def write_prompt(run_dir: Path, *, run_id: str, classifier: str,
 def prepare_from_db(build_a: int, build_b: int, classifier: str) -> Path:
     cfg        = load_config()
     testray    = cfg["databases"]["testray"]
-    rap_cfg    = cfg["databases"].get("release_analytics")
     git_repo   = Path(cfg["git"]["repo_path"]).expanduser()
 
     ts      = datetime.utcnow().strftime("%Y%m%dT%H%M%SZ")
@@ -511,7 +500,7 @@ def prepare_from_db(build_a: int, build_b: int, classifier: str) -> Path:
     print(f"   {len(fragments)} fragments → {hunks_path.relative_to(PROJECT_ROOT)}")
 
     print(f"→ Step 5/6 enrich + pre-classify …")
-    df = enrich_and_pre_classify(df, rap_cfg)
+    df = enrich_and_pre_classify(df)
     # Dedup — SQL can return duplicates when a case has multiple result rows per build
     df = df.drop_duplicates(subset="testray_case_id", keep="first").reset_index(drop=True)
     df_flaky = df[df["known_flaky"].fillna(False)].copy()
