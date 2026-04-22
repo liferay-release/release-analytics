@@ -162,17 +162,29 @@ python3 -m apps.triage.prepare from-db \
     --build-b <target-id>
 ```
 
-**If target is NOT in dim_build** → ask the user for:
-- Path to the target's Testray CSV export (e.g. `~/Downloads/case_results.csv`)
+**If target is NOT in dim_build** → two options:
+
+*(a) `from-csv` — dev downloads the target build's case results CSV from
+Testray and points `prepare` at it:*
+- Path to the CSV (e.g. `~/Downloads/case_results.csv`)
 - Target `build_id` (from the Testray UI)
 - Target `git_hash` (from the Testray build page — 40-char sha from liferay-portal master)
-
-Then run `from-csv`:
 
 ```bash
 python3 -m apps.triage.prepare from-csv \
     --baseline-build <baseline-id> \
     --target-csv <csv-path> \
+    --target-build-id <id> \
+    --target-hash <sha>
+```
+
+*(b) `from-api` — fetch directly from Testray REST. Requires the dev to
+add `testray.client_id` and `testray.client_secret` to `config.yml`
+(ask them if they have these; if not, fall back to `from-csv`).*
+
+```bash
+python3 -m apps.triage.prepare from-api \
+    --baseline-build <baseline-id> \
     --target-build-id <id> \
     --target-hash <sha>
 ```

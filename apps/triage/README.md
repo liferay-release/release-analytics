@@ -137,7 +137,7 @@ psql -U postgres -h localhost -d testray_analytical -c \
 
 ## Usage
 
-Two input modes (API mode is planned — see Backlog):
+Three input modes:
 
 ### `from-db` — both builds in `testray_analytical`
 
@@ -172,7 +172,30 @@ Dev supplies `--target-build-id` and `--target-hash` manually because the
 Testray export doesn't include them. If the target build is also in
 `dim_build`, its metadata fills in automatically.
 
-### Classify + submit (same for both modes)
+### `from-api` — baseline in DB, target fetched live from Testray REST
+
+Used when the target build is fresher than your dump and you'd rather
+not download a CSV. Requires `testray.client_id` + `testray.client_secret`
+in `config.yml` (OAuth2 client_credentials).
+
+```bash
+python3 -m apps.triage.prepare from-api \
+    --baseline-build 451312408 \
+    --target-build-id 462975400
+    # --target-hash is optional if the target is also in dim_build
+```
+
+Expected: ~1.5 minutes for ~15k case results (30 pages × 500, 0.3s between).
+
+**Known gap — no Jira tickets in API mode.** `linked_issues` is not
+populated because the Jira reference isn't a direct field on the case
+result object. In `diff_list.csv` and the generated `prompt.md`, the
+`jira:` line will be missing for target-side failures. Classification
+still works, but you won't see Jira ticket context per failure. If that
+context matters for your session, use `from-db` or `from-csv` instead.
+`prepare.py from-api` prints this warning at runtime.
+
+### Classify + submit (same for all modes)
 
 ```bash
 # 2. Classify inside your own Claude Code session:
@@ -265,12 +288,11 @@ app.properties, bnd.bnd, packageinfo, *.xml, *.properties, *.yml, *.yaml,
 
 ## Backlog
 
-- **`prepare.py from-api`** — fetch target directly from Testray REST
-  (OAuth2 client_credentials) so devs don't have to download a CSV first.
-  Same downstream shape as `from-csv`. Needs: endpoint spec
-  (`/o/c/caseresults` with `filter=r_buildToCaseResult_c_buildId eq 'X'`),
-  pagination, and OAuth token refresh in Python (the R pipeline already
-  does this in `extract/extract_testray.R` for reference).
+- **Jira enrichment in `from-api`** — `linked_issues` is null in API mode
+  because the Jira ticket isn't a direct field on the caseresult object.
+  Options: (a) follow the subtask link per result and resolve jira there;
+  (b) accept the gap since most BUG classifications name a culprit file
+  not a Jira ticket.
 - **Jira ticket auto-creation** (`create_jira_tickets.py`): Read
   `fact_triage_results` for a build, filter to BUG + NEEDS_REVIEW where
   `linked_issues` is null, create LPD tickets via Jira REST, write

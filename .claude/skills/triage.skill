@@ -46,7 +46,7 @@ apps/triage/submit.py   →  validates results.json against schema,
 Input modes (from `prepare.py`):
 - `from-db` (implemented) — both builds from `caseresult_analytical`; joins on `case_id`.
 - `from-csv` (implemented) — baseline from DB, target from a Testray CSV export; joins on `(Case Name, Component)` since the CSV has no `case_id`. Dev supplies `--target-build-id` and `--target-hash` manually.
-- `from-api` (planned) — baseline from DB, target fetched live from Testray REST. OAuth2 client_credentials, same downstream shape as `from-csv`.
+- `from-api` (implemented) — baseline from DB, target fetched live from Testray REST (OAuth2 client_credentials). Joins on `case_id`. **Known gap:** `linked_issues` is null in API mode — the Jira reference isn't a direct field on the caseresult object, so the `jira:` line is absent from per-failure sections in `prompt.md`. Classification still works but without Jira context; fall back to `from-db` or `from-csv` if Jira matters. `prepare.py` prints this warning at runtime.
 
 ## Classification rubric
 

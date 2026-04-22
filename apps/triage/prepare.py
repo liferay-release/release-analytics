@@ -27,6 +27,9 @@ import json
 import re
 import subprocess
 import sys
+import time
+import urllib.parse
+import urllib.request
 from datetime import datetime
 from pathlib import Path
 
@@ -122,6 +125,98 @@ def fetch_build_caseresults(build_id: int, db_cfg: dict) -> pd.DataFrame:
         with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
             cur.execute(sql, (build_id,))
             return pd.DataFrame(cur.fetchall())
+
+
+def _testray_oauth_token(cfg: dict) -> str:
+    """OAuth2 client_credentials flow against the Testray Liferay instance.
+    Returns a bearer token. Mirrors extract/extract_testray.R::get_token()."""
+    base = cfg["base_url"].rstrip("/")
+    if not cfg.get("client_id") or not cfg.get("client_secret"):
+        raise SystemExit(
+            "testray.client_id / testray.client_secret missing from config.yml. "
+            "Both are required for from-api mode."
+        )
+    data = urllib.parse.urlencode({
+        "grant_type":    "client_credentials",
+        "client_id":     cfg["client_id"],
+        "client_secret": cfg["client_secret"],
+    }).encode()
+    req = urllib.request.Request(f"{base}/o/oauth2/token", data=data)
+    with urllib.request.urlopen(req, timeout=30) as resp:
+        body = json.loads(resp.read())
+    token = body.get("access_token")
+    if not token:
+        raise SystemExit(f"OAuth2 token response had no access_token: {body}")
+    return token
+
+
+def _testray_fetch_paginated(
+    endpoint: str, params: dict, token: str, base_url: str,
+    page_size: int = 500, sleep_between: float = 0.3,
+) -> list[dict]:
+    """Follow Liferay Objects pagination until lastPage. Handles token
+    refresh on 401 by raising SystemExit (caller should get a fresh one)."""
+    base = base_url.rstrip("/")
+    items: list[dict] = []
+    page = 1
+    while True:
+        q = dict(params)
+        q["page"]     = page
+        q["pageSize"] = page_size
+        url = f"{base}{endpoint}?{urllib.parse.urlencode(q)}"
+        req = urllib.request.Request(
+            url, headers={"Authorization": f"Bearer {token}"},
+        )
+        try:
+            with urllib.request.urlopen(req, timeout=60) as resp:
+                data = json.loads(resp.read())
+        except urllib.error.HTTPError as e:
+            if e.code == 401:
+                raise SystemExit("Testray API 401 — token expired. Re-run.")
+            raise
+        items.extend(data.get("items", []))
+        last_page = data.get("lastPage", 1)
+        if page >= last_page:
+            break
+        page += 1
+        time.sleep(sleep_between)
+    return items
+
+
+def fetch_build_caseresults_api(build_id: int, cfg: dict) -> pd.DataFrame:
+    """Fetch all case results for a build via Testray REST. Returns the
+    same column shape as parse_testray_csv / fetch_build_caseresults, with
+    `case_name`, `component_name`, `team_name` left blank (filled from
+    baseline on case_id match in compute_test_diff).
+
+    `linked_issues` (Jira) is NOT populated — not a direct field on the
+    caseresult object. Documented gap; can be enriched later by following
+    the subtask link if needed.
+    """
+    token = _testray_oauth_token(cfg)
+    items = _testray_fetch_paginated(
+        "/o/c/caseresults",
+        {
+            "filter": f"r_buildToCaseResult_c_buildId eq '{build_id}'",
+            "fields": "id,dueStatus,errors,"
+                      "r_caseToCaseResult_c_caseId,"
+                      "r_componentToCaseResult_c_componentId,"
+                      "r_teamToCaseResult_c_teamId",
+        },
+        token=token, base_url=cfg["base_url"],
+    )
+    if not items:
+        return pd.DataFrame()
+    return pd.DataFrame({
+        "case_id":        [it.get("r_caseToCaseResult_c_caseId") for it in items],
+        "case_name":      [None] * len(items),
+        "case_flaky":     [None] * len(items),
+        "component_name": [None] * len(items),
+        "team_name":      [None] * len(items),
+        "status":         [(it.get("dueStatus") or {}).get("key") for it in items],
+        "errors":         [it.get("errors") for it in items],
+        "jira_issue":     [None] * len(items),
+    })
 
 
 def parse_testray_csv(path: Path) -> pd.DataFrame:
@@ -697,6 +792,86 @@ def prepare_from_db(build_a: int, build_b: int, classifier: str) -> Path:
     )
 
 
+def prepare_from_api(
+    baseline_build: int,
+    target_build_id: int,
+    target_hash: str | None,
+    classifier: str,
+    target_name: str | None = None,
+) -> Path:
+    """Baseline from DB, target fetched live from Testray REST.
+
+    If target_hash is omitted, we try to resolve it from dim_build (in case
+    the build is already ingested). Otherwise it's required.
+    """
+    cfg          = load_config()
+    testray_db   = cfg["databases"]["testray"]
+    testray_api  = cfg["testray"]
+    git_repo     = Path(cfg["git"]["repo_path"]).expanduser()
+
+    ts      = datetime.utcnow().strftime("%Y%m%dT%H%M%SZ")
+    run_id  = f"r_{ts}_{baseline_build}_{target_build_id}"
+    run_dir = RUNS_DIR / run_id
+    run_dir.mkdir(parents=True, exist_ok=True)
+
+    print(f"→ Step 1/6 test_diff (DB × Testray API) …")
+    baseline = fetch_build_caseresults(baseline_build, testray_db)
+    if baseline.empty:
+        raise SystemExit(f"No case results in DB for baseline build {baseline_build}.")
+    print(f"   baseline rows: {len(baseline)}")
+    print(f"   fetching target build {target_build_id} from Testray API …")
+    target = fetch_build_caseresults_api(target_build_id, testray_api)
+    if target.empty:
+        raise SystemExit(f"Testray API returned 0 case results for build {target_build_id}.")
+    print(f"   target rows:   {len(target)}")
+    print(f"   NOTE: from-api does not populate `linked_issues` — the Jira",
+          file=sys.stderr)
+    print(f"         column in diff_list.csv will be blank for target-side failures.",
+          file=sys.stderr)
+    print(f"         Use from-db or from-csv if Jira ticket context is needed.",
+          file=sys.stderr)
+
+    df = compute_test_diff(baseline, target)
+    if df.empty:
+        raise SystemExit("test_diff returned 0 rows (no PASSED→FAILED after matching).")
+    print(f"   {len(df)} regressions — status_b: "
+          f"{df['status_b'].value_counts().to_dict()}")
+
+    print(f"→ Step 2/6 build metadata …")
+    ra = fetch_build_metadata(baseline_build, testray_db)
+    if ra is None:
+        raise SystemExit(f"Baseline build {baseline_build} not in dim_build.")
+    rb = fetch_build_metadata(target_build_id, testray_db)
+    resolved_hash = target_hash or (rb or {}).get("git_hash")
+    if not resolved_hash:
+        raise SystemExit(
+            f"Target build {target_build_id} is not in dim_build and no "
+            f"--target-hash was supplied. Pass --target-hash <sha>."
+        )
+    target_final = {
+        "build_name": (rb or {}).get("build_name") or target_name or f"api:{target_build_id}",
+        "git_hash":   resolved_hash,
+        "routine_id": (rb or {}).get("routine_id") or ra["routine_id"],
+    }
+    if rb and target_hash and rb["git_hash"] != target_hash:
+        print(f"WARNING: --target-hash={target_hash[:12]} differs from dim_build "
+              f"git_hash={rb['git_hash'][:12]}. Using --target-hash.",
+              file=sys.stderr)
+    print(f"   routine_id={target_final['routine_id']}  "
+          f"A={ra['git_hash'][:12]}  B={target_final['git_hash'][:12]}")
+
+    return _finalize_bundle(
+        df=df, run_id=run_id, run_dir=run_dir,
+        classifier=classifier, input_mode="from-api",
+        build_a=baseline_build, build_b=target_build_id,
+        hash_a=ra["git_hash"], hash_b=target_final["git_hash"],
+        routine_id=target_final["routine_id"],
+        build_a_name=ra["build_name"],
+        build_b_name=target_final["build_name"],
+        git_repo=git_repo,
+    )
+
+
 def prepare_from_csv(
     baseline_build: int,
     target_csv: Path,
@@ -813,6 +988,21 @@ def main() -> None:
     cv.add_argument("--classifier",      default=DEFAULT_CLASSIFIER,
                     help=f"Provenance label (default: {DEFAULT_CLASSIFIER})")
 
+    ap_api = sub.add_parser("from-api",
+        help="Baseline from testray_analytical, target fetched live from Testray REST "
+             "(OAuth2 client_credentials — needs testray.client_id/client_secret in config.yml).")
+    ap_api.add_argument("--baseline-build",  type=int, required=True,
+                        help="Baseline build id (must be in testray_analytical)")
+    ap_api.add_argument("--target-build-id", type=int, required=True,
+                        help="Target build id (fetched from Testray API)")
+    ap_api.add_argument("--target-hash",     default=None,
+                        help="Git hash for target. Optional if target is also "
+                             "in dim_build; required otherwise.")
+    ap_api.add_argument("--target-name",     default=None,
+                        help="Optional display name for the target build")
+    ap_api.add_argument("--classifier",      default=DEFAULT_CLASSIFIER,
+                        help=f"Provenance label (default: {DEFAULT_CLASSIFIER})")
+
     args = ap.parse_args()
     if args.mode == "from-db":
         prepare_from_db(args.build_a, args.build_b, args.classifier)
@@ -820,6 +1010,14 @@ def main() -> None:
         prepare_from_csv(
             baseline_build=args.baseline_build,
             target_csv=args.target_csv,
+            target_build_id=args.target_build_id,
+            target_hash=args.target_hash,
+            classifier=args.classifier,
+            target_name=args.target_name,
+        )
+    elif args.mode == "from-api":
+        prepare_from_api(
+            baseline_build=args.baseline_build,
             target_build_id=args.target_build_id,
             target_hash=args.target_hash,
             classifier=args.classifier,
