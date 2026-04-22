@@ -239,13 +239,22 @@ Either way, you'll get:
 Run bundle ready: apps/triage/runs/r_<ts>_<A>_<B>
 ```
 
-### 8c. Classify
+### 8c. Classify — right here, in this same Claude Code session
 
-The bundle's `prompt.md` explains what to classify. The `.claude/skills/triage.skill` in the repo is loaded automatically when you're working in this repo — it holds the full classification rubric.
+**Do not tell the user to open a new session in the cloned repo.** Keep
+driving classification from this setup session. The bundle's `prompt.md`
+is self-contained; if you need the full rubric or schema, read the skill
+file by absolute path:
 
-Read `apps/triage/runs/r_<ts>_<A>_<B>/prompt.md`, reason through each
-failure against `hunks.txt` and `git_diff_full.diff`, and write
-`apps/triage/runs/r_<ts>_<A>_<B>/results.json` matching `results.schema.json`.
+```bash
+cat ../release-analytics/.claude/skills/triage.skill
+```
+
+Then read `apps/triage/runs/r_<ts>_<A>_<B>/prompt.md`, reason through
+each failure against `hunks.txt` and `git_diff_full.diff`, and write
+`apps/triage/runs/r_<ts>_<A>_<B>/results.json` matching
+`results.schema.json`. All in this session — the dev came here to
+classify, don't make them start over.
 
 ### 8d. Submit
 
@@ -262,20 +271,22 @@ the dev's record.
 
 ## Handoff
 
-Once Step 8 completes successfully, **this setup helper's job is done**.
-Tell the user:
+Once Step 8d (submit) completes successfully, **this setup helper's job
+is done**. Tell the user:
 
-> Setup is complete. You have a working triage environment. From here,
-> the repo's own docs take over:
->
-> - `apps/triage/README.md` — full tool reference, all input modes, backlog
-> - `apps/triage/CLAUDE.md` — session guidance for classification (loaded
->   automatically by Claude Code when you work inside this repo)
-> - `.claude/skills/triage.skill` — the full rubric, schema, and
->   classifier-value conventions
+> Setup and your first triage run are both complete. For future runs,
+> just `cd ../release-analytics && python3 -m apps.triage.prepare ...`
+> straight from a terminal — the repo has its own `CLAUDE.md`,
+> `apps/triage/CLAUDE.md`, and `.claude/skills/triage.skill` that
+> auto-load when you open Claude Code inside the repo.
 >
 > You can delete this `CLAUDE.md` (the setup helper) and the `.dump`
 > file from your original working folder — neither is needed again
 > unless you want to refresh the dump with a newer snapshot.
+
+Do not suggest opening a new Claude Code session in the repo *during*
+the first classification run. The dev is already in this session with
+the bundle ready — push through here. The repo docs become relevant
+for their *next* triage run, not this one.
 
 Do not reuse this file for ongoing work. It's a one-time setup aid.
