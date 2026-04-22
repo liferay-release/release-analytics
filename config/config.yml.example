@@ -1,19 +1,30 @@
 databases:
-  release_analytics:
-    host: localhost
-    port: 5432
-    dbname: release_analytics
-    user: 
-    password: 
+  # testray — REQUIRED for the triage tool.
+  # Matches the defaults in docker-compose.yml / testray_analytical_db.
   testray:
     host: localhost
     port: 5432
     dbname: testray_analytical
-    user:
-    password:
+    user: release
+    password: triage_local
+
+  # release_analytics — OPTIONAL. Only needed if you run the full RAP
+  # pipeline (load_testray.R, export_looker.R, scoring) or if you want
+  # triage's submit.py to persist results to fact_triage_results. For
+  # the triage-only distribution, leave this out and use
+  # `python3 -m apps.triage.submit <run> --no-upsert`.
+  #
+  # release_analytics:
+  #   host: localhost
+  #   port: 5432
+  #   dbname: release_analytics
+  #   user:
+  #   password:
 
 git:
-  repo_path: 
+  # Absolute path to your local liferay-portal checkout. prepare.py reads
+  # diffs from this working tree.
+  repo_path: ~/dev/projects/liferay-portal
   base_branch: master
 
 jira:

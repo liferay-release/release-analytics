@@ -1,39 +1,43 @@
-# docker-compose.yml — release-analytics local development database
+# docker-compose.yml — testray_analytical for the triage tool
 #
 # Usage:
-#   docker compose up -d       start the database in the background
-#   docker compose down        stop (data persists in rap_db_data volume)
-#   docker compose down -v     stop and delete all data (clean slate)
+#   docker compose up -d       start postgres in the background
+#   docker compose down        stop (data persists in the named volume)
+#   docker compose down -v     stop and wipe the volume (clean slate)
 #
-# After first run, schema is applied automatically from db/schema.sql.
-# Subsequent starts reuse the existing volume — schema does not re-run.
+# After the container is up, restore a shared dump into it:
 #
-# Connection string for config/config.yml:
+#   bash db/testray_analytical_restore.sh <path-to-dump>
+#
+# Connection values for config/config.yml (testray section):
 #   host: localhost
 #   port: 5432
-#   dbname: release_analytics
-#   user: rap_user
-#   password: changeme_local   ← local dev only, never use in production
+#   dbname: testray_analytical
+#   user: release
+#   password: triage_local    ← local dev only
+#
+# POSTGRES_USER below seeds a superuser that owns restored objects when
+# pg_restore --no-owner is used. The dump is restored without GRANTs;
+# ownership is assigned to this user directly.
 
 services:
-  db:
+  testray_analytical_db:
     image: postgres:14
-    container_name: release_analytics_db
+    container_name: testray_analytical_db
     environment:
-      POSTGRES_DB: release_analytics
-      POSTGRES_USER: rap_user
-      POSTGRES_PASSWORD: changeme_local
+      POSTGRES_DB:       testray_analytical
+      POSTGRES_USER:     release
+      POSTGRES_PASSWORD: triage_local
     ports:
       - "5432:5432"
     volumes:
-      - ./db/schema.sql:/docker-entrypoint-initdb.d/01_schema.sql
-      - rap_db_data:/var/lib/postgresql/data
+      - testray_analytical_data:/var/lib/postgresql/data
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U rap_user -d release_analytics"]
+      test: ["CMD-SHELL", "pg_isready -U release -d testray_analytical"]
       interval: 5s
       timeout: 5s
       retries: 5
 
 volumes:
-  rap_db_data:
-    name: rap_db_data
+  testray_analytical_data:
+    name: testray_analytical_data
