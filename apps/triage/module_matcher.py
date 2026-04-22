@@ -11,8 +11,8 @@ on raw path substrings. Now every matched file resolves to:
   - team_name
 
 Used by:
-  - prompt_builder.py   (enriches failures before sending to Claude)
-  - triage_claude.py    (attaches component context to triage results)
+  - prepare.py          (optional team_name enrichment via dim_component)
+  - prompt_helpers.py   (resolving diff file paths to components)
 
 Matching strategy (in order):
   1. Exact module path match against dim_module.module_path_full

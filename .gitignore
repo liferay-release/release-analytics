@@ -57,7 +57,9 @@ data/*.csv
 __pycache__/
 
 # -----------------------------------------------------------------------------
-# Triage runtime artifacts — per-run traces and batch output, not source
+# Triage runtime artifacts — per-run bundles, traces, and legacy output
+# prepare.py writes per-run bundles to apps/triage/runs/r_<id>/ (can be 100MB+)
 # -----------------------------------------------------------------------------
 apps/triage/traces/
 apps/triage/output/
+apps/triage/runs/

@@ -4,24 +4,49 @@ description: >
   Reference for the Liferay Testray regression triage workflow. Use this
   skill whenever working on triage classification, interpreting
   fact_triage_results, building labeled outcomes for pr_outcomes training,
-  or running either the batch pipeline or Claude Code workflow against a
+  or running the prepare → classify-in-session → submit flow against a
   Testray build pair. Trigger when the user mentions triage, regressions,
   PASSED→FAILED, build pairs, culprit files, extract_relevant_hunks,
-  run_triage.sh, or fact_triage_results.
+  prepare.py, submit.py, or fact_triage_results.
 ---
 
 # Triage Skill
 
 ## Purpose
 
-Classify Testray PASSED→FAILED regressions between two builds of a
-routine. Output feeds two consumers:
+Classify Testray PASSED→FAILED/BLOCKED/UNTESTED regressions between two
+builds of a routine. Output feeds two consumers:
 
-1. **Investigation** — BUG cases generate LPD-Task tickets with culprit
-   file and rationale
-2. **Training data** — labeled BUG rows with culprit_file become supervised
+1. **Investigation** — BUG cases eventually generate LPD-Task tickets with
+   culprit file and rationale (Jira auto-creation is backlog, not wired up).
+2. **Training data** — labeled BUG rows with `culprit_file` become supervised
    signal for the NN-based PR risk prediction layer (backlog, pending
-   `pr_outcomes` population)
+   `pr_outcomes` population).
+
+## Workflow shape — prepare / classify / submit
+
+Classification happens in the developer's own Claude Code session. There
+is no Anthropic-API call inside this repo; the previous `triage_claude.py`
+batch path has been retired.
+
+```
+apps/triage/prepare.py  →  runs/r_<id>/{prompt.md, diff_list.csv,
+                                         hunks.txt, results.schema.json,
+                                         run.yml, git_diff_full.diff,
+                                         test_fragments.txt}
+                             |
+                             | dev's Claude Code session reads prompt.md,
+                             | writes results.json
+                             v
+apps/triage/submit.py   →  validates results.json against schema,
+                             upserts to fact_triage_results + triage_run_log
+                             (or --no-upsert for PoC / inspection)
+```
+
+Input modes (from `prepare.py`):
+- `from-db` (implemented) — PASSED→FAILED from `caseresult_analytical`
+- `from-csv` (planned — step 2) — one build's results exported from Testray
+- `from-api` (planned — step 2) — direct fetch via Testray REST
 
 ## Classification rubric
 
@@ -32,108 +57,171 @@ Code change in the build pair plausibly caused the failure. Requires:
 - Clean history before the build + consistent failure after + at least
   one component-relevant change in the diff
 
-**Must name a `culprit_file` even at low confidence.**
+**Must name a `culprit_file` even at low confidence.** Current PoC gate
+is ≥85% culprit coverage across BUG rows (a deliberate softening of the
+rule's "always" wording — tracked so we can tighten back to 100% once the
+workflow is stable).
 
 ### FALSE_POSITIVE
 Not caused by code changes. Common patterns:
-- Flaky test (>30% intermittent failures across 20 recent runs in
+- Chronic intermittent failure (>30% fail rate across 20 recent runs in
   unrelated contexts)
-- Environmental failure (DB, infrastructure, known CI issue)
+- Environmental failure (DB, chrome, CI infra, TEST_SETUP_ERROR, timeouts)
 - Test was already failing on the base build — not a regression
 
-Culprit file is null. Rationale must state which pattern applies.
+`culprit_file` is null. `reason` must state which pattern applies.
 
 ### NEEDS_REVIEW
-Evidence genuinely insufficient for BUG or FALSE_POSITIVE within ~5
-tool calls. Escalate to human. Not a default — only when ambiguity
-remains after real investigation.
+Evidence genuinely insufficient for BUG or FALSE_POSITIVE after real
+investigation. Not a default — only when ambiguity remains.
 
-## Schema: fact_triage_results
+## Pre-classification (automatic, before reasoning)
 
-| Column         | Type      | Notes                                              |
-|----------------|-----------|----------------------------------------------------|
-| case_id        | TEXT      | Testray case identifier                            |
-| build_pair_id  | TEXT      | {routine_id}_{build_a}_{build_b}                   |
-| classification | TEXT      | BUG | NEEDS_REVIEW | FALSE_POSITIVE                 |
-| confidence     | TEXT      | high | medium | low                                |
-| culprit_file   | TEXT      | nullable; required non-null for BUG                |
-| rationale      | TEXT      | plain language explanation                         |
-| tool_trace     | JSONB     | array of {tool, args, result_hash}                 |
-| classified_at  | TIMESTAMP |                                                    |
-| classifier     | TEXT      | batch:v1 | agent:claude-sonnet-4-6 | human          |
+`prepare.py` applies `prompt_helpers.pre_classify` to each row's error
+message. Rows that match these patterns are tagged with `pre_classification`
+in `diff_list.csv` and should **not** appear in `results.json` — they are
+upserted automatically as `classification=AUTO_CLASSIFIED`:
 
-Primary key: (case_id, build_pair_id, classifier) — allows multiple
-classifiers on the same case for comparison.
+| pre_classification | Pattern |
+|---|---|
+| `BUILD_FAILURE`   | "The build failed prior to running the test" |
+| `ENV_CHROME`      | `chrome=100.0`, `Session info: chrome=1...` |
+| `ENV_DEPENDENCY`  | `org.tensorflow`, `repository-cdn.liferay.com`, Gradle dep downloads |
+| `ENV_DATE`        | hardcoded date XPaths like `data-startdate,'11/DD/YYYY'` |
+| `ENV_SETUP`       | `TEST_SETUP_ERROR` |
+| `NO_ERROR`        | empty/NA error message |
 
-## Tool contracts
+Extend via `triage.auto_classify_patterns` in `config/config.yml`.
 
-### tools/get_regressions.py
+## Schema: fact_triage_results (actual DDL)
+
+| Column             | Type          | Notes                                                  |
+|--------------------|---------------|--------------------------------------------------------|
+| id                 | SERIAL PK     |                                                        |
+| run_date           | TIMESTAMP     | defaults NOW()                                         |
+| build_id_a         | BIGINT        | baseline                                               |
+| build_id_b         | BIGINT        | target                                                 |
+| git_hash_a         | VARCHAR(64)   |                                                        |
+| git_hash_b         | VARCHAR(64)   |                                                        |
+| testray_case_id    | BIGINT        |                                                        |
+| test_case          | TEXT          |                                                        |
+| component_name     | VARCHAR(255)  | Testray component (enriched via `dim_component` if available) |
+| team_name          | VARCHAR(255)  | nullable — from `dim_component.team_name`              |
+| status_a / status_b| VARCHAR(32)   |                                                        |
+| known_flaky        | BOOLEAN       |                                                        |
+| linked_issues      | VARCHAR(512)  | Jira tickets from Testray                              |
+| error_message      | TEXT          |                                                        |
+| match_strategy     | VARCHAR(64)   | `confidence=<h\|m\|l>` for agent rows, `auto` / `missing` otherwise |
+| pre_classification | VARCHAR(64)   | BUILD_FAILURE \| ENV_* \| NO_ERROR \| null             |
+| classification     | VARCHAR(32)   | BUG \| NEEDS_REVIEW \| FALSE_POSITIVE \| AUTO_CLASSIFIED |
+| **classifier**     | VARCHAR(64)   | `batch:v1` (legacy API), `agent:claude-opus-4-7`, `human`, … |
+| specific_change    | TEXT          |                                                        |
+| reason             | TEXT          |                                                        |
+| batch_number, tokens_in, tokens_out, api_error | — | legacy from API-batch era; 0 / null for agent runs |
+
+**Unique key:** `(build_id_b, testray_case_id, classifier)` — multiple
+classifiers can hold independent classifications on the same case for
+head-to-head comparison.
+
+`triage_run_log` mirrors the `classifier` column at run granularity.
+
+## File contracts between prepare and submit
+
+`runs/r_<id>/run.yml` — YAML metadata, authored by prepare:
+
+```yaml
+run_id:           r_20260422T062415Z_451312408_462975400
+input_mode:       from-db
+classifier:       agent:claude-opus-4-7
+build_id_a:       451312408
+build_id_b:       462975400
+git_hash_a:       9122f6b9a09fc6a5d9e21777fedca8880911a4bc
+git_hash_b:       77445e4a3a4725acd868027493b96ef41d6afbe8
+routine_id:       82964
+total_failures:   446
+auto_classified:  43
+flaky_excluded:   81
 ```
-args:    routine_id, build_a, build_b
-returns: [{case_id, test_name, component, failure_msg}]
-```
-Returns PASSED→FAILED transitions between the two builds.
 
-### tools/get_test_history.py
-```
-args:    case_id, limit=20
-returns: [{build_id, routine, status, timestamp}] ordered desc
-```
-Used for flakiness detection. >30% failures in unrelated builds = flaky.
+`runs/r_<id>/diff_list.csv` — one row per non-duplicate case:
+`testray_case_id, test_case, component_name, team_name, status_a, status_b,
+known_flaky, linked_issues, error_message, pre_classification`.
 
-### tools/get_hunks.py
-```
-args:    case_id, build_a, build_b
-returns: [{file_path, hunk_text, lines_changed}]
-```
-Wraps `extract_relevant_hunks.py`. Uses --exact path matching, splits
-on ` / ` with whitespace guard to avoid over-matching. If result exceeds
-~500 lines for one case, hunk extraction may be misconfigured — escalate.
+`runs/r_<id>/hunks.txt` — unified git diff filtered by
+`extract_relevant_hunks.py` to hunks whose file paths match tokens from
+failing tests. `git_diff_full.diff` alongside holds the unfiltered diff.
 
-### tools/upsert_result.py
-```
-args: case_id, build_pair_id, classification, confidence,
-      culprit_file, rationale, tool_trace
-```
-Writes to `fact_triage_results`. Errors if record exists for this
-(case_id, build_pair_id, classifier) without --reclassify flag.
+`runs/r_<id>/results.schema.json` — JSON Schema. Requires every element
+of `results[]` to have `testray_case_id`, `classification`, `confidence`,
+`reason`; enforces `classification=BUG → non-empty culprit_file` via an
+`if/then`.
 
-## Batch pipeline reference
+`runs/r_<id>/results.json` — written by the dev's Claude Code session:
 
-The batch pipeline processes build pairs end-to-end:
-```
-run_triage.sh
-  → extract_relevant_hunks.py   (filter diff to relevant files)
-  → prompt_builder.py           (build classification prompts)
-  → triage_claude.py            (API calls, batched)
-  → store.py                    (upsert to fact_triage_results)
+```json
+{
+  "run_id":     "r_…",
+  "classifier": "agent:claude-opus-4-7",
+  "results": [
+    {
+      "testray_case_id": 12345,
+      "classification":  "BUG",
+      "confidence":      "high",
+      "culprit_file":    "modules/apps/.../Foo.java",
+      "specific_change": "Foo.java:42 removed null check in bar()",
+      "reason":          "…"
+    }
+  ]
+}
 ```
 
-Output files land in `apps/triage/output/` (gitignored):
-- batch_N.md          raw classification responses per batch
-- triage_results.csv  flat export of classifications
-- git_diff_full.diff  full diff used for the run
+`submit.py` will:
+- Reject any row where `classification=BUG` and `culprit_file` is empty.
+- Reject rows with `testray_case_id` not in `diff_list.csv`, or where the
+  case was pre-classified / flaky (those are handled upstream).
+- Warn on cases in `diff_list.csv` that have no entry in `results.json`
+  — missing rows default to `NEEDS_REVIEW` on upsert (not silently skipped).
+- Upsert with the `classifier` field from `results.json` (its value
+  overrides `run.yml` if they disagree; a warning is printed).
 
-Classifier value for batch: `batch:v1`
+## Command cheat sheet
+
+```bash
+# 1. Prepare the bundle
+python3 -m apps.triage.prepare from-db --build-a 451312408 --build-b 462975400
+
+# 2. Classify inside your own Claude Code session
+#    (read runs/r_<id>/prompt.md, write runs/r_<id>/results.json)
+
+# 3. Submit
+python3 -m apps.triage.submit apps/triage/runs/r_<id>            # with DB writes
+python3 -m apps.triage.submit apps/triage/runs/r_<id> --no-upsert # inspect only
+```
 
 ## Reproducibility
 
-Agent classification is not bit-for-bit reproducible across runs due to
-model sampling variance. Mitigations:
-- `tool_trace` column is the audit artifact — captures the full path taken
-- For training-data-grade labels, majority vote across 3 runs per case
-- Disagreement rate between batch and Claude Code classifiers on the same
-  build pair is a quality signal — report it at end of session
-- High disagreement = rubric ambiguity or systematic model bias, not error
+Agent classification across different Claude Code sessions is not
+bit-for-bit reproducible — model sampling + reading-order effects.
+Mitigations:
+- `classifier` column makes head-to-head comparison explicit.
+- `reason` text is the audit artifact — readable rationale, not just
+  a label.
+- Disagreement rate between `batch:v1` and `agent:*` (or between two
+  agent runs) on the same build pair is a quality signal; surface it in
+  the end-of-session summary.
+- For training-data-grade labels, consider multi-run majority voting
+  (future work; not yet wired into the pipeline).
 
 ## Relationship to pr_outcomes (backlog)
 
 `fact_triage_results` BUG rows with non-null `culprit_file` are the
-labeled training data for a future NN-based PR risk prediction layer.
+labeled training data for the future NN-based PR risk prediction layer.
 Prerequisites before that layer is viable:
-1. Sufficient labeled history in `fact_triage_results`
-2. `pr_outcomes` table populated with post-merge defect outcomes
-3. Linkage: testray_case_id + githash → pr_outcomes
+
+1. Sufficient labeled history in `fact_triage_results` (grow the
+   `agent:*` + `human` partitions over time).
+2. `pr_outcomes` table populated with post-merge defect outcomes.
+3. Linkage: `testray_case_id + git_hash_b → pr_outcomes`.
 
 Do not shortcut culprit_file attribution — label quality now determines
 model quality later.

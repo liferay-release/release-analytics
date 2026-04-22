@@ -54,29 +54,33 @@ CREATE TABLE IF NOT EXISTS fact_triage_results (
     match_strategy       VARCHAR(64),
 
     -- Classification
-    -- pre_classification: auto-classified before Claude
+    -- pre_classification: auto-classified env/infra before reasoning
     --   BUILD_FAILURE, ENV_CHROME, ENV_DEPENDENCY, ENV_DATE, ENV_SETUP, NO_ERROR
-    -- classification: Claude output or AUTO_CLASSIFIED
+    -- classification: reasoning output or AUTO_CLASSIFIED
     --   BUG, NEEDS_REVIEW, FALSE_POSITIVE, AUTO_CLASSIFIED
+    -- classifier: who produced this row — batch:v1 (legacy Anthropic API),
+    --   agent:claude-opus-4-7 (in-session Claude Code), human, etc.
     pre_classification   VARCHAR(64),
     classification       VARCHAR(32)      NOT NULL DEFAULT 'NEEDS_REVIEW',
+    classifier           VARCHAR(64)      NOT NULL DEFAULT 'batch:v1',
     specific_change      TEXT,
     reason               TEXT,
 
-    -- API cost tracking
+    -- Run metadata
     batch_number         INTEGER,
     tokens_in            INTEGER          DEFAULT 0,
     tokens_out           INTEGER          DEFAULT 0,
     api_error            TEXT,
 
-    -- Unique constraint — one result per test per build_b
-    UNIQUE (build_id_b, testray_case_id)
+    -- One result per test per build_b per classifier — enables head-to-head
+    UNIQUE (build_id_b, testray_case_id, classifier)
 );
 """
 
 CREATE_INDEX_SQL = [
     "CREATE INDEX IF NOT EXISTS idx_triage_build_b      ON fact_triage_results (build_id_b);",
     "CREATE INDEX IF NOT EXISTS idx_triage_classification ON fact_triage_results (classification);",
+    "CREATE INDEX IF NOT EXISTS idx_triage_classifier     ON fact_triage_results (classifier);",
     "CREATE INDEX IF NOT EXISTS idx_triage_component     ON fact_triage_results (component_name);",
     "CREATE INDEX IF NOT EXISTS idx_triage_run_date      ON fact_triage_results (run_date);",
 ]
@@ -102,18 +106,18 @@ INSERT INTO fact_triage_results (
     run_date, build_id_a, build_id_b, git_hash_a, git_hash_b,
     testray_case_id, test_case, component_name, team_name,
     status_a, status_b, known_flaky, linked_issues, error_message,
-    match_strategy, pre_classification, classification,
+    match_strategy, pre_classification, classification, classifier,
     specific_change, reason, batch_number, tokens_in, tokens_out, api_error
 )
 VALUES (
     %(run_date)s, %(build_id_a)s, %(build_id_b)s, %(git_hash_a)s, %(git_hash_b)s,
     %(testray_case_id)s, %(test_case)s, %(component_name)s, %(team_name)s,
     %(status_a)s, %(status_b)s, %(known_flaky)s, %(linked_issues)s, %(error_message)s,
-    %(match_strategy)s, %(pre_classification)s, %(classification)s,
+    %(match_strategy)s, %(pre_classification)s, %(classification)s, %(classifier)s,
     %(specific_change)s, %(reason)s, %(batch_number)s, %(tokens_in)s, %(tokens_out)s,
     %(api_error)s
 )
-ON CONFLICT (build_id_b, testray_case_id) DO UPDATE SET
+ON CONFLICT (build_id_b, testray_case_id, classifier) DO UPDATE SET
     run_date          = EXCLUDED.run_date,
     classification    = EXCLUDED.classification,
     specific_change   = EXCLUDED.specific_change,
@@ -135,14 +139,18 @@ def upsert_triage_results(
     build_id_b: int,
     git_hash_a: str,
     git_hash_b: str,
+    classifier: str = "agent:claude-opus-4-7",
 ):
     """
     Upsert triage results DataFrame into fact_triage_results.
 
     Args:
-        df:           Output of triage_claude.run_triage() merged DataFrame
+        df:           DataFrame with one row per classified case
         build_id_a/b: Build IDs
         git_hash_a/b: Git hashes
+        classifier:   Provenance label — 'batch:v1', 'agent:claude-opus-4-7',
+                      'human', etc. Lets the same (build_id_b, case_id) hold
+                      multiple independent classifications.
     """
     run_date = datetime.utcnow()
     rows_inserted = 0
@@ -174,6 +182,7 @@ def upsert_triage_results(
                     "match_strategy":    _safe_str(row.get("match_strategy")),
                     "pre_classification": _safe_str(row.get("pre_classification")),
                     "classification":    _safe_str(row.get("classification"), default="NEEDS_REVIEW"),
+                    "classifier":        classifier,
                     "specific_change":   _safe_str(row.get("specific_change")),
                     "reason":            _safe_str(row.get("reason")),
                     "batch_number":      _safe_int(row.get("batch_number")),
@@ -187,7 +196,7 @@ def upsert_triage_results(
         conn.commit()
 
     print(f"Upserted {rows_inserted} rows into fact_triage_results "
-          f"({rows_skipped} skipped — no testray_case_id).")
+          f"(classifier={classifier}, {rows_skipped} skipped — no testray_case_id).")
 
 
 # ---------------------------------------------------------------------------
@@ -202,6 +211,7 @@ CREATE TABLE IF NOT EXISTS triage_run_log (
     build_id_b   BIGINT     NOT NULL,
     git_hash_a   VARCHAR(64),
     git_hash_b   VARCHAR(64),
+    classifier   VARCHAR(64) NOT NULL DEFAULT 'batch:v1',
     total_cases  INTEGER,
     bug_count    INTEGER,
     needs_review INTEGER,
@@ -232,39 +242,42 @@ def log_run(
     flaky_excluded: int,
     duration_seconds: float,
     notes: str = None,
+    classifier: str = "agent:claude-opus-4-7",
 ):
     """Write a summary row to triage_run_log."""
     counts = df["classification"].value_counts().to_dict()
+    tokens_in  = int(df["tokens_in"].sum())  if "tokens_in"  in df.columns else 0
+    tokens_out = int(df["tokens_out"].sum()) if "tokens_out" in df.columns else 0
 
     with get_rap_conn() as conn:
         with conn.cursor() as cur:
             cur.execute("""
                 INSERT INTO triage_run_log (
-                    build_id_a, build_id_b, git_hash_a, git_hash_b,
+                    build_id_a, build_id_b, git_hash_a, git_hash_b, classifier,
                     total_cases, bug_count, needs_review, false_pos, auto_class,
                     flaky_excl, total_tokens_in, total_tokens_out,
                     duration_seconds, notes
                 ) VALUES (
-                    %s, %s, %s, %s,
+                    %s, %s, %s, %s, %s,
                     %s, %s, %s, %s, %s,
                     %s, %s, %s,
                     %s, %s
                 )
             """, (
-                build_id_a, build_id_b, git_hash_a, git_hash_b,
+                build_id_a, build_id_b, git_hash_a, git_hash_b, classifier,
                 len(df),
                 counts.get("BUG", 0),
                 counts.get("NEEDS_REVIEW", 0),
                 counts.get("FALSE_POSITIVE", 0),
                 counts.get("AUTO_CLASSIFIED", 0),
                 flaky_excluded,
-                int(df["tokens_in"].sum()),
-                int(df["tokens_out"].sum()),
+                tokens_in,
+                tokens_out,
                 duration_seconds,
                 notes,
             ))
         conn.commit()
-    print(f"Run logged to triage_run_log.")
+    print(f"Run logged to triage_run_log (classifier={classifier}).")
 
 
 # ---------------------------------------------------------------------------
