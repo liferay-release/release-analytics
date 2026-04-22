@@ -96,7 +96,7 @@ MIN_FAIL_BUILDS <- 10  # minimum builds a test case must fail to qualify for qua
 log_info("Running co-failure SQL (db/cofailure_pairs.sql)...")
 
 cofail_sql <- paste(readLines("db/cofailure_pairs.sql"), collapse = "\n")
-cofail_scored <- cofail_scored |>
+cofail_scored <- dbGetQuery(con_testray, cofail_sql) |>
   distinct(component_a, component_b, .keep_all = TRUE)
 
 log_info("Co-failure pairs returned: {nrow(cofail_scored)}")

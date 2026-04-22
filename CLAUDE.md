@@ -161,6 +161,20 @@ labels now determines quality of the model later.
 
 ## Active backlog (as of April 2026)
 
+- `transform_cofailure.R` not wired into `run_pipeline.sh` — must be run
+  manually after the orchestrator. Fold in as its own step (or extend
+  `step_transform`) once cofailure schema is stable.
+- `transform_cofailure.R` upsert bugs (pre-existing, surfaced 2026-04-21):
+  (1) `fact_component_cofailure` live table is missing `UNIQUE (component_a,
+  component_b)` — `CREATE TABLE IF NOT EXISTS` doesn't retrofit constraints
+  onto existing tables. Add `CREATE UNIQUE INDEX IF NOT EXISTS` in Step 3,
+  or migrate the constraint. (2) Step 5 upserts `fact_test_quality` with
+  `ON CONFLICT (case_id)` but the live constraint is
+  `(case_id, routine_id, window_quarter)` — and it writes at case-grain
+  while `load_testray.R` writes at case × routine × window grain. Two
+  scripts own the same fact table with incompatible grains. Pick an owner
+  (likely `load_testray.R`) and drop the fact_test_quality upsert from
+  cofailure, or split into a new `fact_test_signal_score` table.
 - Feature-flagged churn dampening — weight stored, not yet consumed by
   scoring or export
 - `is_forecast_row` = FALSE for all rows — fix pending in

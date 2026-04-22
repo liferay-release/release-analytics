@@ -67,6 +67,31 @@ echo ""
 # the project directory (avoids any /home/nikki perm issues).
 sudo -u postgres psql -d testray_analytical -v ON_ERROR_STOP=1 < "$SCHEMA_FILE"
 
+# -----------------------------------------------------------------------------
+# Step 3: Grant SELECT on all tables to the analytics role.
+# The schema.sql runs as `postgres`, so everything it creates is owned by
+# postgres. The pipeline (load_testray.R, triage, cofailure) connects as
+# `release`, which needs explicit SELECT privileges.
+#
+# Override the role with ANALYTICS_USER=myrole if your setup uses a
+# different user.
+# -----------------------------------------------------------------------------
+ANALYTICS_USER="${ANALYTICS_USER:-release}"
+
+echo ""
+echo "Step 3: granting SELECT to '$ANALYTICS_USER' role..."
+
+if ! sudo -u postgres psql -d testray_analytical -v ON_ERROR_STOP=1 \
+     -c "GRANT SELECT ON ALL TABLES IN SCHEMA public TO $ANALYTICS_USER;"; then
+    echo ""
+    echo "  WARNING: GRANT failed. The '$ANALYTICS_USER' role may not exist."
+    echo "  Tables are built and usable by postgres. To grant access manually:"
+    echo ""
+    echo "    sudo -u postgres psql -d testray_analytical \\"
+    echo "      -c \"GRANT SELECT ON ALL TABLES IN SCHEMA public TO <role>;\""
+    echo ""
+fi
+
 END=$(date +%s)
 DURATION=$((END - START))
 

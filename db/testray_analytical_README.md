@@ -58,14 +58,12 @@ The script runs `psql` under `sudo -u postgres` and relies on peer auth via
 the default socket — no `.pgpass` or `PGPASSWORD` needed. You'll be prompted
 for your sudo password once.
 
-### Step 3 — Grant read access to the analytics user
+The script also runs `GRANT SELECT ON ALL TABLES IN SCHEMA public TO release`
+automatically at the end, so the pipeline user can read the tables it just
+created. Override with `ANALYTICS_USER=myrole bash db/testray_analytical_bootstrap.sh`
+if your setup uses a different role.
 
-```bash
-sudo -u postgres psql -d testray_analytical \
-  -c "GRANT SELECT ON ALL TABLES IN SCHEMA public TO release;"
-```
-
-### Step 4 — Validate before dropping `testray_working_db`
+### Step 3 — Validate before dropping `testray_working_db`
 
 Before reclaiming the ~150GB, confirm the pipeline runs cleanly against the
 new DB:
