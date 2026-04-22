@@ -198,6 +198,23 @@ python3 -m apps.triage.submit apps/triage/runs/r_<id>            # with DB write
 python3 -m apps.triage.submit apps/triage/runs/r_<id> --no-upsert # inspect only
 ```
 
+## Session summary format
+
+After `submit.py` completes, output a session summary using the
+template in `apps/triage/CLAUDE.md` (section "End of session summary").
+Key requirements:
+
+- Headline table with BUG / NEEDS_REVIEW / FALSE_POSITIVE / AUTO_CLASSIFIED counts.
+- **Direct verdict line** answering "Are the failures caused by the
+  diff?" — the table alone forces the reader to do the math.
+- **BUG cluster grouping** — 2–5 shared-root-cause groups naming culprit
+  files and affected tests, not row-by-row.
+- Bundle path, classifier label, culprit-file coverage %, and — if
+  prior `batch:v1` rows exist — disagreement rate on shared cases.
+
+A consistent output shape makes runs comparable over time and saves
+stakeholders from parsing ad-hoc prose each run.
+
 ## Reproducibility
 
 Agent classification across different Claude Code sessions is not

@@ -141,18 +141,70 @@ Do not guess — escalate when:
   join keys.
 - Do not reference SonarQube — retired; lizard is the complexity source.
 
-## End of session summary
+## End of session summary — use this template
 
-Report:
+After `submit.py` completes, output a session summary in exactly this
+shape. It's what stakeholders will read first; a consistent format
+makes runs comparable over time.
 
-- N classified: X BUG / Y NEEDS_REVIEW / Z FALSE_POSITIVE / W AUTO_CLASSIFIED
-- N escalated to user
-- BUG culprit_file coverage (target ≥85% while in PoC; 100% is the
-  long-term rule)
-- Disagreement rate vs the `batch:v1` rows on the same build pair, if
-  any exist — a quality signal, not an error
-- Any surprises about the hunk-extraction coverage (e.g. diff is huge
-  and the filter barely narrowed it)
+```
+## Triage report — build A (<id>) → B (<id>)  ·  routine <id>
+
+<N> PASSED→FAILED/BLOCKED/UNTESTED transitions → <M> unique cases classified.
+
+| Classification                | Count |
+|-------------------------------|------:|
+| BUG (caused by diff)          | <x>   |
+| NEEDS_REVIEW                  | <y>   |
+| FALSE_POSITIVE                | <z>   |
+| AUTO_CLASSIFIED (breakdown)   | <w>   |
+
+**Are the failures caused by the diff?** <direct answer: "Mostly no —
+only X of M are clearly diff-caused." or "Yes — N of M trace to a single
+regression in X.">
+
+### BUG clusters
+
+Group the <x> BUG rows by shared root cause (usually 2–5 clusters).
+
+1. **<one-line cause>** (<count> failures) — culprit: `<file_paths>`.
+   Affects: <list of failing tests or test-file shortnames>.
+2. ...
+
+### NEEDS_REVIEW worth a human look
+
+<y> cases. One line each — why it's ambiguous and which component /
+Jira ticket is worth checking.
+
+- <case_id> <short test name> — <reason>
+- ...
+
+### Bundle + metadata
+
+- Bundle: `apps/triage/runs/<run_id>`
+- Classifier: `<classifier label>`
+- BUG culprit_file coverage: <k>/<x> (<pct>% — target ≥85% during PoC,
+  100% long-term)
+- Flaky excluded: <n_flaky>
+- Hunk-extraction coverage: <note if the filter barely narrowed the
+  diff, e.g. "75MB of 83MB — huge window, filter minimally effective">
+- Disagreement vs `batch:v1` (if prior rows exist): <pct>% on shared
+  cases. Flag this as signal, not error.
+```
+
+### Why the "Are the failures caused by the diff?" line matters
+
+That's the *actual question* stakeholders are asking. A breakdown table
+without the verdict leaves the reader to do the math. Always follow the
+table with a direct yes / no / mostly-no + the key number.
+
+### Cluster rule
+
+Don't just list BUG rows one by one. Group rows that share a culprit
+file or a shared upstream cause (e.g. a feature flag flip, a JSP class
+removal, a refactor that broke a common selector) into 2–5 clusters.
+Each cluster names the culprit file(s) and the affected tests. This is
+what converts raw counts into an engineering action plan.
 
 ## Classifier values
 

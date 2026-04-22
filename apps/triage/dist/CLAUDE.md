@@ -267,6 +267,17 @@ right choice for this distribution, since `release_analytics` isn't
 running locally. Results live in `runs/r_<ts>_<A>_<B>/results.json` as
 the dev's record.
 
+After submit, **output a session summary using the template in**
+`../release-analytics/apps/triage/CLAUDE.md` (section "End of session
+summary — use this template"). Read that file first, then produce:
+
+- Headline table with BUG / NEEDS_REVIEW / FALSE_POSITIVE / AUTO_CLASSIFIED counts.
+- Direct verdict line: "Are the failures caused by the diff?" — followed
+  by a concrete yes / no / mostly-no + the key number.
+- BUG cluster grouping (2–5 root causes with culprit files + affected tests).
+- NEEDS_REVIEW one-liners.
+- Bundle path, classifier, culprit coverage %.
+
 ---
 
 ## Handoff
