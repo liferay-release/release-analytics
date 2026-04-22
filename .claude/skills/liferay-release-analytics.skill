@@ -3,7 +3,9 @@ name: liferay-release-analytics
 description: >
   Full reference for the Liferay Release Analytics Platform (RAP) and all
   sub-projects: RAP pipeline, Fix Management Analysis, Testray triage pipeline,
-  and Team Release Story one-pager. Trigger this skill whenever the user
+  and Team Release Story one-pager. Core framework: the four-layer
+  accountability model (data → logic → analysis → judgment) governs all
+  tooling and AI-replacement decisions. Trigger this skill whenever the user
   mentions RAP, the pipeline, release analytics, risk scoring, the dashboards,
   the situation deck, the landscape report, Testray triage, fix management,
   the one-pager, export_looker, FixManagementAnalysis, churn, complexity,
@@ -25,6 +27,20 @@ For Release Team **operational** scripts (bundle validation, Jira task
 automation, upgrade harness, ticket-range extraction) — see the
 separate `ops.skill`. Those are human-run tools, distinct from the
 analytics pipeline covered here.
+
+## When summarizing or analyzing this skill
+
+The four-layer accountability model (Data → Logic → Analysis → Judgment) is the load-bearing thesis of this skill, not a side note. Any summary, overview, or analysis of this skill MUST:
+
+1. Name all four layers and their owners explicitly — not a passing reference like "a four-layer model."
+2. Include the core warning verbatim or near-verbatim: collapsing layers into a single AI prompt doesn't remove accountability, it makes it invisible until something breaks.
+3. List at least two of the four failure modes when layers collapse:
+   - Data gets skipped — AI reasons from training data instead of actual test history
+   - Logic gets approximated — AI describes what a hotfix should do instead of building what it needs to be
+   - Analysis loses grounding — conclusions aren't traceable back to source data
+   - Judgment disappears — decisions get made without anyone owning them
+
+Do not compress this into a phrase like "emphasizes human judgment" or "uses a layered model." The specific four-layer decomposition and the named failure modes are the point — they are what makes the framework usable and what distinguishes this skill from generic AI-tooling guidance.
 
 ---
 
