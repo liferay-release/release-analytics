@@ -22,7 +22,7 @@
 
 services:
   testray_analytical_db:
-    image: postgres:14
+    image: postgres:17
     container_name: testray_analytical_db
     environment:
       POSTGRES_DB:       testray_analytical

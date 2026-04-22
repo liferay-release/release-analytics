@@ -1,8 +1,14 @@
 # Triage setup helper (one-time)
 
-> This file is **strictly for first-time setup**. Once setup is done, stop
-> using it — the cloned repo's own `CLAUDE.md` and `.claude/skills/` take
-> over as the source of truth.
+> **How to use this file** — open Claude Code in the folder where this
+> file sits (alongside a `testray_analytical_*.dump`), then prompt with
+> something like *"set up triage"* or *"walk me through the next steps"*.
+> Claude loads this file automatically and drives the setup.
+>
+> **Strictly for first-time setup.** After the first successful triage
+> run, hand off to the cloned repo's own `CLAUDE.md` and
+> `.claude/skills/` — those become the source of truth for ongoing
+> sessions.
 >
 > **Source of truth:** `apps/triage/dist/CLAUDE.md` in the
 > release-analytics repo. Anyone refreshing the shared Drive package
@@ -17,6 +23,32 @@ laptop for the first time. They have two artifacts in this folder:
 
 The goal is to get them from these two files to running their first triage
 against a real build pair, and then hand off to the repo's own docs.
+
+---
+
+## Step 0 — Explain the plan first
+
+**Before running any commands**, tell the dev what's about to happen so
+they know what they're signing up for. Keep it brief (≤10 lines), then
+wait for them to say "go" / "yes" / similar before running anything.
+
+Template to use (adapt timings based on their disk/CPU):
+
+> Here's what I'll walk you through, roughly 10-15 minutes total:
+>
+> 1. Prereq check — Docker, Python 3.10+, git (1 min)
+> 2. Clone `liferay-release/release-analytics` into the parent folder (1 min)
+> 3. `docker compose up -d` — start a local postgres container (30 sec)
+> 4. Restore the `.dump` file into the container (5-10 min)
+> 5. Create `config/config.yml` + ask for your `liferay-portal` path
+> 6. Python venv + `pip install` the triage requirements (2 min)
+> 7. Run your first triage (you'll pick a build pair; I'll drive prepare
+>    → classify → submit)
+>
+> You can interrupt, ask questions, or redo any step. Ready to start?
+
+After they confirm, proceed with Step 1. If they ask questions first,
+answer them, then ask again before running commands.
 
 ---
 
@@ -131,13 +163,20 @@ Now drive the interactive flow. Ask the user for:
 
 ### 8a. Build pair
 
+Set Postgres connection info for this shell session so `psql` works
+without flags for the rest of the setup:
+
+```bash
+export PGHOST=localhost PGPORT=5432 PGUSER=release \
+       PGDATABASE=testray_analytical PGPASSWORD=triage_local
+```
+
 First, tell them the cutoff for what's in the dump:
 
 ```bash
-PGPASSWORD=triage_local psql -h localhost -U release -d testray_analytical -c \
-  "SELECT routine_id, MAX(build_datetime)::date AS last_build_in_dump,
-          COUNT(DISTINCT build_id) AS builds
-     FROM dim_build GROUP BY routine_id ORDER BY routine_id;"
+psql -c "SELECT routine_id, MAX(build_datetime)::date AS last_build_in_dump,
+               COUNT(DISTINCT build_id) AS builds
+           FROM dim_build GROUP BY routine_id ORDER BY routine_id;"
 ```
 
 Then ask:
@@ -148,8 +187,7 @@ Then ask:
 Check whether the target is in `dim_build`:
 
 ```bash
-PGPASSWORD=triage_local psql -h localhost -U release -d testray_analytical -c \
-  "SELECT build_id, build_name, git_hash FROM dim_build WHERE build_id = <id>;"
+psql -c "SELECT build_id, build_name, git_hash FROM dim_build WHERE build_id = <id>;"
 ```
 
 ### 8b. Pick the input mode based on whether target is in the dump
