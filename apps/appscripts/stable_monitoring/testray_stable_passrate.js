@@ -63,25 +63,18 @@ function fetchStableData() {
   const dataTab = ss.getSheetByName("Stable_fetch");
   const routineID = 79529;
 
-  const apiEndpoint = "https://testray.liferay.com/o/testray-rest/v1.0/testray-status-metrics/by-testray-routineId/" 
+  const baseEndpoint = "https://testray.liferay.com/o/testray-rest/v1.0/testray-status-metrics/by-testray-routineId/" 
   + routineID 
   + "/testray-builds-metrics?pageSize=500";
 
-  const response = UrlFetchApp.fetch(apiEndpoint, {
-    headers: {
-      "Authorization": `Bearer ${accessToken}`
-    }
-  });
+  const cutoffDate = new Date("2025-10-01").getTime();
 
-  const content = JSON.parse(response.getContentText());
-  const items = content["items"];
-  
   const lastRow = dataTab.getLastRow();
   let existingBuildIDs = new Set();
-  
+
   if (lastRow === 0) {
     const headers = [
-      "RoutineID", "TestrayBuildID", "TestrayBuildLink", "TestrayBuildGitHash", "TestrayBuildDate", "InProgress", "Incomplete", 
+      "RoutineID", "TestrayBuildID", "TestrayBuildName", "TestrayBuildLink", "TestrayBuildGitHash", "TestrayBuildDate", "InProgress", "Incomplete", 
       "TestFix", "Blocked", "Untested", "Failed", "NotPassed", "Passed", "Total", 
       "PassRate", "", "CPUUsage"
     ];
@@ -94,45 +87,69 @@ function fetchStableData() {
   }
 
   let newRows = [];
-  const bugFixDate = new Date("2026-03-25").getTime(); 
+  const bugFixDate = new Date("2026-03-25").getTime();
+  let page = 1;
+  let reachedCutoff = false;
 
-  for (let index = 0; index < items.length; index++) {
-    const build = items[index];
-    const testrayBuildID = build["testrayBuildId"];
+  while (!reachedCutoff) {
+    const apiEndpoint = baseEndpoint + "&page=" + page;
+    ss.toast(`Fetching page ${page}...`, '⚙️ Working...', -1);
 
-    if (testrayBuildID > 1 && !existingBuildIDs.has(testrayBuildID.toString())) {
-      const buildLink = `https://testray.liferay.com/web/testray#/project/35392/routines/79529/build/${testrayBuildID}`;
-      const testrayBuildGitHash = build["testrayBuildGitHash"];
+    const response = UrlFetchApp.fetch(apiEndpoint, {
+      headers: { "Authorization": `Bearer ${accessToken}` }
+    });
+
+    const content = JSON.parse(response.getContentText());
+    const items = content["items"] || [];
+
+    if (items.length === 0) break;
+
+    for (let index = 0; index < items.length; index++) {
+      const build = items[index];
+      const testrayBuildID = build["testrayBuildId"];
       const testrayBuildDate = build["testrayBuildDueDate"];
-      const metrics = build["testrayStatusMetric"];
-      
-      const inProgress = metrics["inProgress"];
-      const incomplete = metrics["incomplete"];
-      const testfix = metrics["testfix"];
-      const blocked = metrics["blocked"];
-      const failed = metrics["failed"];
-      const passed = metrics["passed"];
-      
-      let untested = metrics["untested"];
-      let total = metrics["total"];
-      
-      const buildDateObj = new Date(testrayBuildDate);
-      if (buildDateObj.getTime() < bugFixDate) {
-        if (untested > 0) untested -= 1;
-        if (total > 0) total -= 1;
-      }
-      
-      const notPassed = inProgress + incomplete + testfix + blocked + untested + failed;
-      const passRate = total > 0 ? (passed / total) : 0; 
-      const cpuUsage = build["testrayBuildCPUUseTime"];
 
-      newRows.push([
-        routineID, testrayBuildID, buildLink, testrayBuildGitHash, testrayBuildDate, inProgress, incomplete, 
-        testfix, blocked, untested, failed, notPassed, passed, total, 
-        passRate, "", cpuUsage
-      ]);
-    }
-  } 
+      if (testrayBuildDate && new Date(testrayBuildDate).getTime() < cutoffDate) {
+        reachedCutoff = true;
+        break;
+      }
+
+      if (testrayBuildID > 1 && !existingBuildIDs.has(testrayBuildID.toString())) {
+        const buildLink = `https://testray.liferay.com/web/testray#/project/35392/routines/79529/build/${testrayBuildID}`;
+        const testrayBuildName = build["testrayBuildName"];
+        const testrayBuildGitHash = build["testrayBuildGitHash"];
+        const metrics = build["testrayStatusMetric"];
+
+        const inProgress = metrics["inProgress"];
+        const incomplete = metrics["incomplete"];
+        const testfix = metrics["testfix"];
+        const blocked = metrics["blocked"];
+        const failed = metrics["failed"];
+        const passed = metrics["passed"];
+
+        let untested = metrics["untested"];
+        let total = metrics["total"];
+
+        const buildDateObj = new Date(testrayBuildDate);
+        if (buildDateObj.getTime() < bugFixDate) {
+          if (untested > 0) untested -= 1;
+          if (total > 0) total -= 1;
+        }
+
+        const notPassed = inProgress + incomplete + testfix + blocked + untested + failed;
+        const passRate = total > 0 ? (passed / total) : 0;
+        const cpuUsage = build["testrayBuildCPUUseTime"];
+
+        newRows.push([
+          routineID, testrayBuildID, testrayBuildName, buildLink, testrayBuildGitHash, testrayBuildDate, inProgress, incomplete,
+          testfix, blocked, untested, failed, notPassed, passed, total,
+          passRate, "", cpuUsage
+        ]);
+      }
+    } // end for
+
+    page++;
+  } // end while
 
   if (newRows.length > 0) {
     newRows.reverse(); 
@@ -144,8 +161,8 @@ function fetchStableData() {
     const range = dataTab.getRange(startRow, 1, numRows, numCols);
     range.setValues(newRows);
     
-    dataTab.getRange(startRow, 5, numRows, 1).setNumberFormat("yyyy-MM-dd");
-    dataTab.getRange(startRow, 15, numRows, 1).setNumberFormat("0.0000");
+    dataTab.getRange(startRow, 6, numRows, 1).setNumberFormat("yyyy-MM-dd");
+    dataTab.getRange(startRow, 16, numRows, 1).setNumberFormat("0.0000");
     
     SpreadsheetApp.getActiveSpreadsheet().toast(`Successfully added ${numRows} new records!`, 'Fetch Complete');
   } else {
@@ -170,7 +187,7 @@ function updateStableTimeline() {
     return;
   }
   
-  const fetchData = fetchTab.getRange(2, 1, fetchLastRow - 1, 15).getValues(); 
+  const fetchData = fetchTab.getRange(2, 1, fetchLastRow - 1, 16).getValues(); 
   
   const timelineLastRow = timelineTab.getLastRow();
   let existingIDs = new Set();
@@ -190,10 +207,10 @@ function updateStableTimeline() {
   fetchData.forEach(row => {
     const routineID = row[0];
     const buildID = row[1];
-    const buildLink = row[2];
-    const buildGitHash = row[3]; 
-    const buildDateRaw = row[4]; 
-    const passRate = row[14]; 
+    const buildLink = row[3];
+    const buildGitHash = row[4]; 
+    const buildDateRaw = row[5]; 
+    const passRate = row[15]; 
     
     if (!buildDateRaw) return; 
     const buildDate = new Date(buildDateRaw);
@@ -232,7 +249,7 @@ function fetchFailedTests(token) {
   const fetchLastRow = fetchTab.getLastRow();
   if (fetchLastRow < 2) return;
   
-  const fetchData = fetchTab.getRange(2, 1, fetchLastRow - 1, 15).getValues();
+  const fetchData = fetchTab.getRange(2, 1, fetchLastRow - 1, 16).getValues();
 
   const failedLastRow = failedTab.getLastRow();
   let existingFailedIDs = new Set();
@@ -249,9 +266,9 @@ function fetchFailedTests(token) {
   let buildsToProcess = [];
   for (let i = 0; i < fetchData.length; i++) {
     const buildID = fetchData[i][1];
-    const buildLink = fetchData[i][2]; 
-    const buildDate = fetchData[i][4]; 
-    const passRate = fetchData[i][14]; 
+    const buildLink = fetchData[i][3]; 
+    const buildDate = fetchData[i][5]; 
+    const passRate = fetchData[i][15]; 
     
     if (passRate < 1 && buildID && !existingFailedIDs.has(buildID.toString())) {
       buildsToProcess.push({
@@ -360,7 +377,7 @@ function updateTestMetrics() {
   const fetchLastRow = fetchTab.getLastRow();
   if (fetchLastRow < 2) return;
   
-  const fetchData = fetchTab.getRange(2, 1, fetchLastRow - 1, 5).getValues();
+  const fetchData = fetchTab.getRange(2, 1, fetchLastRow - 1, 6).getValues();
   
   let preChangeBuilds = new Set();
   let postChangeBuilds = new Set();
@@ -368,7 +385,7 @@ function updateTestMetrics() {
   
   fetchData.forEach(row => {
     const buildID = row[1];
-    const buildDateRaw = row[4];
+    const buildDateRaw = row[5];
     
     // ADDED: !ignoredBuilds.has filter
     if (buildID && buildDateRaw && !ignoredBuilds.has(buildID.toString())) {
@@ -474,13 +491,13 @@ function updateWeeklyMetrics() {
   // 1. Calculate Total Builds per Week
   const fetchLastRow = fetchTab.getLastRow();
   if (fetchLastRow < 2) return;
-  const fetchData = fetchTab.getRange(2, 1, fetchLastRow - 1, 5).getValues();
+  const fetchData = fetchTab.getRange(2, 1, fetchLastRow - 1, 6).getValues();
   
   let weeklyBuilds = {}; 
   
   fetchData.forEach(row => {
     const buildID = row[1];
-    const buildDateRaw = row[4];
+    const buildDateRaw = row[5];
     
     // ADDED: !ignoredBuilds.has filter
     if (buildID && buildDateRaw && !ignoredBuilds.has(buildID.toString())) {
@@ -582,7 +599,7 @@ function propagateCITags() {
   if (fetchTab) {
     const fetchLastRow = fetchTab.getLastRow();
     if (fetchLastRow > 1) {
-      fetchTab.getRange("R1").setValue("Ignore_Build"); 
+      fetchTab.getRange("S1").setValue("Ignore_Build"); 
       const ids = fetchTab.getRange(2, 2, fetchLastRow - 1, 1).getValues(); 
       
       // Define tagValues FIRST
@@ -592,7 +609,7 @@ function propagateCITags() {
       });
 
       // Define the range and THEN clear/set values
-      const range = fetchTab.getRange(2, 18, fetchLastRow - 1, 1);
+      const range = fetchTab.getRange(2, 19, fetchLastRow - 1, 1);
       range.clearContent(); 
       range.setValues(tagValues);
     }
