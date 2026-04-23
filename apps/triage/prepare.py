@@ -335,7 +335,7 @@ def compute_test_diff(baseline: pd.DataFrame, target: pd.DataFrame) -> pd.DataFr
     out = pd.DataFrame({
         "testray_case_id":        diff[case_id_col],
         "test_case":              diff[name_col],
-        "known_flaky":            diff[flaky_col].fillna(False),
+        "known_flaky":            diff[flaky_col].fillna(False).astype(bool),
         "testray_component_name": diff[comp_col],
         "status_a":               diff["status_a"],
         "status_b":               diff["status_b"],
@@ -824,8 +824,16 @@ def _finalize_bundle(
     fragments_path = run_dir / "test_fragments.txt"
     fragments_path.write_text("\n".join(sorted(fragments)), encoding="utf-8")
     hunks_path = run_dir / "hunks.txt"
-    run_extract_hunks(diff_path, fragments_path, hunks_path)
-    print(f"   {len(fragments)} fragments → {hunks_path.relative_to(PROJECT_ROOT)}")
+    if fragments:
+        run_extract_hunks(diff_path, fragments_path, hunks_path)
+        print(f"   {len(fragments)} fragments → {hunks_path.relative_to(PROJECT_ROOT)}")
+    else:
+        # Happens when neither side carries case_name (e.g. api × api): no
+        # tokens to narrow the diff. Fall back to the full diff; classify
+        # by reading hunks.txt directly.
+        hunks_path.write_bytes(diff_path.read_bytes())
+        print(f"   WARNING: no test_case fragments (both sides lack case_name). "
+              f"Copying full diff → hunks.txt unfiltered.", file=sys.stderr)
 
     print(f"→ Step 5/6 enrich + pre-classify …")
     df = enrich_and_pre_classify(df)
