@@ -255,6 +255,39 @@ Persisted in `release_analytics`:
 
 ---
 
+## Caveats
+
+### Baseline must be the last fully passing build (critical for Stable)
+
+The tool surfaces only **PASSED→FAILED** transitions in the A→B window.
+Any test that was already failing in Build A is invisible to the classifier —
+it appears as FAILED→FAILED and is excluded from `diff_list.csv` entirely.
+
+This creates a gap when a failure persists across multiple builds:
+
+```
+Build A  → all pass      (last good build)
+Build B  → Test X fails  (regression introduced)
+Build C  → Test X fails  (still failing — new commit on top)
+```
+
+A **B→C** comparison will not surface Test X. It was already failing in B
+(the baseline), so it never appears as a regression. The original A→B
+regression has no triage record under the B→C pair.
+
+**For Stable, this is load-bearing.** Stable is all-or-nothing: a failing
+build never syncs to repo2, so consecutive failed builds accumulate. If
+the baseline is set to any build that was not a fully clean pass, the
+triage output silently understates the regression count.
+
+**Mitigation:** Always use the last fully passing Stable build as the
+baseline. The Jenkins automation enforces this by only updating
+`last_good_build_id` on a clean success. For manual runs, verify the
+baseline build ID against Testray before proceeding — a build that shows
+any non-pass result is not a valid baseline.
+
+---
+
 ## Classifier column — head-to-head comparison
 
 `fact_triage_results` is keyed on `(build_id_b, testray_case_id,

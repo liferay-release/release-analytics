@@ -66,6 +66,23 @@ names but no `case_id`; API carries `case_id` but no names — no common
 join key. `prepare.py` hard-errors with a PoC message. Workarounds: use
 `db` on at least one side, or the same source on both sides.
 
+### Baseline validity — persistent failures are invisible
+
+The diff query (`test_diff.sql`) returns only **PASSED→FAILED/BLOCKED/UNTESTED**
+transitions. A test that was already failing in the baseline build is
+excluded from all output.
+
+This matters most for **Stable**, which is all-or-nothing:
+no partial passes, and multiple consecutive failed builds are common. If
+Build B fails and a new commit produces Build C that also fails, a B→C
+comparison will miss any regression that originated in A→B. The correct
+baseline is always the last build where **all** tests passed.
+
+When this property is violated — e.g., someone passes a failing build as
+`--baseline-build-id` — the triage output is valid but incomplete. There
+is no error; the gap is silent. Flag this if you notice the baseline build
+ID doesn't appear in a clean-pass context.
+
 ## Classification rubric
 
 ### BUG

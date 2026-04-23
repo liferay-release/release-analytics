@@ -72,6 +72,15 @@ laptops where the DB is an ephemeral local copy.
    for iteration but not what you want if you're trying to compare runs.
 3. Confirm `config/config.yml` has valid DB credentials + a working
    `git.repo_path` pointing at a local liferay-portal checkout.
+4. **Verify the baseline actually passed.** The tool only surfaces
+   PASSED→FAILED transitions. Any test already failing in Build A is
+   invisible — it will not appear in `diff_list.csv` or `results.json`.
+   For Stable specifically, this is critical: Stable is all-or-nothing,
+   so multiple consecutive failed builds can accumulate. If the baseline
+   is a build that had *any* failures, those persistent regressions have
+   no triage record under this run and the output will silently
+   undercount real bugs. If you're unsure whether the baseline was a
+   clean pass, check before classifying — do not assume.
 
 ## The classification loop
 
