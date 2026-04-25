@@ -25,9 +25,22 @@ builds of a routine. Output feeds two consumers:
 
 ## Workflow shape — prepare / classify / submit
 
-Classification happens in the developer's own Claude Code session. There
-is no Anthropic-API call inside this repo; the previous `triage_claude.py`
-batch path has been retired.
+`prepare.py` produces a classifier-agnostic run bundle; classification
+can happen via **either**:
+
+- **Claude Code mode (default for local dev, this skill)** — the
+  developer reads `prompt.md` in-session and writes `results.json` by
+  hand. No SDK, no API key. Classifier label: `agent:claude-opus-4-7`.
+- **API mode** — `apps.triage.classify_api` sends the bundle to the
+  Anthropic API with prompt caching + batching on the shared header.
+  Used for Jenkins / headless. Requires
+  `pip install -r apps/triage/requirements-api.txt` and
+  `ANTHROPIC_API_KEY`. Classifier label: `api:claude-opus-4-7`. The
+  legacy `triage_claude.py` (Sonnet-4, markdown-table output) has
+  been retired — `batch:v1` rows are historical.
+
+Both modes produce the same `results.json` and are comparable on the
+same build pair via `apps/triage/compare_classifiers.py`.
 
 ```
 apps/triage/prepare.py  →  runs/r_<id>/{prompt.md, diff_list.csv,
@@ -35,8 +48,14 @@ apps/triage/prepare.py  →  runs/r_<id>/{prompt.md, diff_list.csv,
                                          run.yml, git_diff_full.diff,
                                          test_fragments.txt}
                              |
-                             | dev's Claude Code session reads prompt.md,
-                             | writes results.json
+                   ┌─────────┴─────────┐
+                   |                   |
+         Claude Code session    apps/triage/classify_api.py
+         reads prompt.md,         (Jenkins / headless — sends the
+         writes results.json      bundle to Anthropic, writes
+                                  results.json)
+                   |                   |
+                   └─────────┬─────────┘
                              v
 apps/triage/submit.py   →  validates results.json against schema,
                              upserts to fact_triage_results + triage_run_log
@@ -54,6 +73,17 @@ independently picks `--{side}-source` from:
   responses have `case_id` but lack `case_name` / `component_name`.
   `--{side}-hash` is optional if the build is in `dim_build`, required
   otherwise.
+
+**`api` source case-name enrichment (2026-04-25):** `caseresults`
+returned by Testray's `/o/c/caseresults` endpoint don't carry case
+names. After `compute_test_diff` returns the failure set, `prepare.py`
+calls `fetch_case_metadata()` to look up each surviving `case_id` via
+`/o/c/cases/{id}` and backfill `test_case` + `known_flaky`. Without
+this enrichment, api×api bundles produce empty test names → the
+fragment-based hunk matcher has nothing to anchor on → the prompt is
+sparse and classifications regress. One extra REST call per case
+(typically ≤ 100 after diff dedup); cached by Testray's OAuth token
+TTL.
 
 **Known `api` gap:** `linked_issues` is null for api sides — the Jira
 reference isn't a direct field on the caseresult object, so the `jira:`
@@ -85,30 +115,66 @@ ID doesn't appear in a clean-pass context.
 
 ## Classification rubric
 
-### BUG
-Code change in the build pair plausibly caused the failure. Requires:
-- A hunk in the diff that explains the failure, OR
-- A linked Jira ticket confirming the regression as a code defect, OR
-- Clean history before the build + consistent failure after + at least
-  one component-relevant change in the diff
+The full rubric lives in `prepare.py::PROMPT_HEADER` and is embedded in
+every `prompt.md`. This section is the conceptual reference; treat
+`prompt.md` as the source of truth at classification time.
 
-**Must name a `culprit_file` even at low confidence.** Current PoC gate
-is ≥85% culprit coverage across BUG rows (a deliberate softening of the
-rule's "always" wording — tracked so we can tighten back to 100% once the
-workflow is stable).
+**Confidence gates classification.** The `confidence` field
+(`high | medium | low`) is structural, not metadata.
+
+### BUG
+Code change in the build pair clearly caused the failure. Requires:
+- **`high` confidence on a verifiable culprit** — a plausible theory at
+  `medium` confidence is **NEEDS_REVIEW**, not BUG.
+- A hunk in the diff (direct or via imports/lifecycle) explaining the
+  failure, OR a linked Jira ticket confirming the regression.
+
+**Must name a `culprit_file`.** Current PoC gate is ≥85% culprit
+coverage across BUG rows (a deliberate softening of the rule's "always"
+wording — tracked so we can tighten back to 100% once the workflow is
+stable).
+
+### NEEDS_REVIEW
+The safe default for any of:
+- Confidence is `medium` or `low` and the candidate theory cannot be
+  fully verified from the prompt.
+- The failing test plausibly imports, extends, or depends on code in
+  another changed module that has no hunk matching the test's name —
+  the **transitive-dep** case. Note the suspected file in
+  `specific_change` so a human can verify.
+- **Multiple ticket clusters** (LPD/LPP/LPS-XXXXX) in the diff
+  plausibly affect the failing test's space. List all candidates in
+  `specific_change` separated by `; `. Do not pick a single theory —
+  the human reviewer disambiguates.
+- Generic error messages (e.g. `compileTestIntegrationJava failed`,
+  `BUILD FAILED`, aggregate batch status) where multiple changes could
+  explain the failure.
 
 ### FALSE_POSITIVE
-Not caused by code changes. Common patterns:
+Clearly environmental or genuinely unrelated. May be `high` confidence
+(timeouts, gradle build infra, chrome version, TEST_SETUP_ERROR are
+confidently environmental). Common patterns:
 - Chronic intermittent failure (>30% fail rate across 20 recent runs in
   unrelated contexts)
-- Environmental failure (DB, chrome, CI infra, TEST_SETUP_ERROR, timeouts)
+- Environmental failure (DB, chrome, CI infra, TEST_SETUP_ERROR,
+  timeouts, gradle build infrastructure)
 - Test was already failing on the base build — not a regression
+- No relevant hunk + error unrelated to any changed module **AND** no
+  plausible import / lifecycle / framework dependency
 
 `culprit_file` is null. `reason` must state which pattern applies.
 
-### NEEDS_REVIEW
-Evidence genuinely insufficient for BUG or FALSE_POSITIVE after real
-investigation. Not a default — only when ambiguity remains.
+### Why the transitive + multi-cause rules exist
+
+API mode (`classify_api.py`) cannot read source files. Without these
+rules, the model dismisses transitive bugs ("the test name doesn't
+match any changed file") even when a clustered ticket touches an
+importer the test depends on. The rubric biases borderline cases
+toward NEEDS_REVIEW so a human verifies — escalation is recoverable;
+silent FALSE_POSITIVE dismissal is not. Validated 2026-04-25 against
+human-curated reports on three build pairs (468135639→468172457,
+468883224→469013940, 468629046→468687189) — every shared case
+classified the same direction as the human reviewer.
 
 ## Pre-classification (automatic, before reasoning)
 
@@ -149,7 +215,7 @@ Extend via `triage.auto_classify_patterns` in `config/config.yml`.
 | match_strategy     | VARCHAR(64)   | `confidence=<h\|m\|l>` for agent rows, `auto` / `missing` otherwise |
 | pre_classification | VARCHAR(64)   | BUILD_FAILURE \| ENV_* \| NO_ERROR \| null             |
 | classification     | VARCHAR(32)   | BUG \| NEEDS_REVIEW \| FALSE_POSITIVE \| AUTO_CLASSIFIED |
-| **classifier**     | VARCHAR(64)   | `batch:v1` (legacy API), `agent:claude-opus-4-7`, `human`, … |
+| **classifier**     | VARCHAR(64)   | `batch:v1` (legacy API, retired), `agent:claude-opus-4-7` (Claude Code mode), `api:claude-opus-4-7` (API mode), `human`, … |
 | specific_change    | TEXT          |                                                        |
 | reason             | TEXT          |                                                        |
 | batch_number, tokens_in, tokens_out, api_error | — | legacy from API-batch era; 0 / null for agent runs |
@@ -187,6 +253,21 @@ known_flaky, linked_issues, error_message, pre_classification`.
 `extract_relevant_hunks.py` to hunks whose file paths match tokens from
 failing tests. `git_diff_full.diff` alongside holds the unfiltered diff.
 
+`runs/r_<id>/prompt.md` — the prompt the classifier reads. Built by
+`prepare.py::write_prompt`. Includes (in order): rubric and how-to
+sections, `## UI chrome changes` (shared-UI files in the diff that can
+break tests in unrelated components), `## All changed files in this
+diff` (manifest grouped by module — gives the model context for
+transitive deps when per-failure hunk matching is empty), `## Commits
+in this range` (clustered by LPD/LPP/LPS ticket — multi-commit
+clusters often represent a single refactor), then `## Failures to
+classify` with per-failure sections embedding matched hunks.
+
+`runs/r_<id>/batches/batch_NN.md` — only present after running
+`classify_api.py --dry-run`. Mirror of what would be sent to the
+Anthropic API per batch (system blocks + user message). Useful for
+inspecting prompt content before a paid run.
+
 `runs/r_<id>/results.schema.json` — JSON Schema. Requires every element
 of `results[]` to have `testray_case_id`, `classification`, `confidence`,
 `reason`; enforces `classification=BUG → non-empty culprit_file` via an
@@ -222,6 +303,8 @@ of `results[]` to have `testray_case_id`, `classification`, `confidence`,
 
 ## Command cheat sheet
 
+### Claude Code mode (interactive, local dev)
+
 ```bash
 # 1. Prepare the bundle (db × db — historical PoC case)
 python3 -m apps.triage.prepare \
@@ -244,6 +327,39 @@ python3 -m apps.triage.prepare \
 # 3. Submit
 python3 -m apps.triage.submit apps/triage/runs/r_<id>            # with DB writes
 python3 -m apps.triage.submit apps/triage/runs/r_<id> --no-upsert # inspect only
+```
+
+### API mode (Jenkins / headless — `apps/triage/run_triage_api.sh`)
+
+```bash
+export ANTHROPIC_API_KEY=sk-ant-...
+# (one-time install of API deps)
+pip install -r apps/triage/requirements-api.txt
+
+# One-shot: prepare + classify via Anthropic API + submit. Same source-flag
+# rules as prepare.py; --build-a/--build-b shorthand for db on both sides.
+./apps/triage/run_triage_api.sh --build-a 451312408 --build-b 462975400
+
+# With orthogonal sources (e.g. api×api on builds not in local DB):
+./apps/triage/run_triage_api.sh \
+    --baseline-source api --baseline-build-id <A> --baseline-hash <sha> \
+    --target-source   api --target-build-id   <B> --target-hash   <sha>
+
+# Useful flags:
+#   --dry-run        → prepare + write batch previews; no API call, no submit
+#   --no-upsert      → run + classify but skip DB writes
+#   --classifier <l> → override default api:claude-opus-4-7 (use a custom
+#                      label to A/B compare runs in fact_triage_results)
+```
+
+### Comparing classifiers head-to-head
+
+```bash
+# Both modes upsert under different classifier labels — same key
+# (build_id_b, testray_case_id, classifier), so rows coexist.
+python3 -m apps.triage.compare_classifiers --build-id-b <id> \
+    --classifier-a agent:claude-opus-4-7 \
+    --classifier-b api:claude-opus-4-7
 ```
 
 ## Session summary format

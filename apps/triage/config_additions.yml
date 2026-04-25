@@ -1,34 +1,25 @@
 # config.yml — additions for apps/triage
 #
 # Add these blocks to your existing config.yml.
-# The 'database' block may already exist — only add 'testray_database' and
+# The 'databases' block may already exist — only add 'testray' and
 # 'triage' if not already present. Never commit credentials to git.
 
-# Existing block — verify these are already set
-database:
-  host: localhost
-  port: 5432
-  name: release_analytics
-  user: your_user         # ← already in your config
-  password: your_password # ← already in your config
-
-# New block — Testray database (shareable analytical DB)
-testray_database:
-  host: localhost
-  port: 5432
-  name: testray_analytical
-  user: your_user
-  password: your_password
+databases:
+  # New block — Testray database (shareable analytical DB)
+  testray:
+    host: localhost
+    port: 5432
+    dbname: testray_analytical
+    user: your_user
+    password: your_password
 
 # New block — triage settings
 triage:
   git_repo_path: ~/dev/projects/github/liferay-portal
-  anthropic_api_key: your_anthropic_api_key   # or set ANTHROPIC_API_KEY env var
-  model: claude-sonnet-4-20250514
-  max_tokens_per_batch: 24000
-  output_dir: apps/triage/output
-  # Errors matching these patterns are auto-classified without calling Claude
-  # Saves API cost on obvious env/infra failures
+
+  # Errors matching these patterns are auto-classified without sending
+  # them to a classifier. Saves cost and focuses the classifier on real
+  # candidates.
   auto_classify_patterns:
     BUILD_FAILURE:
       - "The build failed prior to running the test"
@@ -41,3 +32,61 @@ triage:
     ENV_DATE:
       - "data-startdate,'11/05/2025'"
       - "data-startdate,'11/06/2025'"
+
+  # Classifier modes — two paths, same run bundle, same results.json
+  # contract.
+  #
+  #   claude_code (default)
+  #       A developer classifies in their Claude Code session by reading
+  #       prompt.md. No SDK install, no API key needed. This is the
+  #       primary local-dev flow.
+  #
+  #   api
+  #       apps/triage/classify_api.py sends the bundle to Anthropic via
+  #       the SDK. Used for Jenkins runs or environments without Claude
+  #       Code. Requires `pip install -r apps/triage/requirements-api.txt`
+  #       and ANTHROPIC_API_KEY in the environment (never put the key
+  #       in this file).
+  #
+  # Both modes read the same prompt.md and write the same results.json —
+  # the only difference is who does the reading. classifier label in
+  # fact_triage_results distinguishes them (agent:claude-opus-4-7 vs
+  # api:claude-opus-4-7).
+  classifier:
+    api:
+      # Same model as the Claude Code default so the two modes are
+      # directly comparable.
+      model: claude-opus-4-7
+
+      # Effort level. Opus 4.7 makes this matter more than any prior
+      # Opus — `xhigh` is the Claude Code default and the best setting
+      # for coding/agentic use cases; `high` is the minimum recommended
+      # for intelligence-sensitive work. `max` is available but prone
+      # to overthinking. Dial down to `medium`/`low` only if cost
+      # becomes an issue.
+      effort: xhigh
+
+      # Per-batch input budget (chars, not tokens — ~4 chars/token).
+      # 400k chars ≈ 100k input tokens. Sized to keep most bundles in
+      # 1–2 API calls while leaving headroom for output and prompt
+      # caching of the shared header.
+      #
+      # Cost note: the dominant cost is input tokens. Bigger batches
+      # amortize the shared header (rubric + context) over more
+      # failures. Prompt caching (enabled by classify_api.py) gives
+      # ~90% off on the cached prefix across batches within a 5-min
+      # window, so extra batches are cheap but not free. Start here;
+      # shrink only if output truncation occurs on very large bundles.
+      max_chars_per_batch: 400000
+
+      # Output ceiling per API call. 16k leaves headroom for ~80-120
+      # classifications per batch without truncation. classify_api.py
+      # streams the response, so there is no HTTP timeout risk at this
+      # size.
+      max_output_tokens: 16000
+
+      # Delay between batches keeps us below the per-minute token rate
+      # limit on shared accounts. The Anthropic SDK auto-retries rate
+      # limits and 5xx errors (max_retries on the client), so we don't
+      # wrap our own retry loop around transient API failures.
+      delay_between_batches_seconds: 2

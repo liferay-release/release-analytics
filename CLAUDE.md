@@ -175,14 +175,18 @@ labels now determines quality of the model later.
   scripts own the same fact table with incompatible grains. Pick an owner
   (likely `load_testray.R`) and drop the fact_test_quality upsert from
   cofailure, or split into a new `fact_test_signal_score` table.
-- **Triage `csv × api` join gap** — `prepare.py` hard-errors when one
-  side is `csv` and the other is `api`. CSV exports carry
-  `(case_name, component_name)` but no `case_id`; API responses carry
-  `case_id` but no names — no common join key. Unblock by enriching one
-  side: (a) follow the case link per API caseresult to populate
-  `case_name` / `component_name`, or (b) look up CSV rows against the
-  Testray API by `(Case Name, Component)` to get `case_id`. Either
-  gives us the remaining 2 of 9 source combos.
+- **Triage `csv × api` join gap (partially closed 2026-04-25)** —
+  `prepare.py` still hard-errors on `csv × api` because the two sides
+  share no join key. The api-side enrichment piece (option (a) below)
+  has been implemented as `fetch_case_metadata` — every api-source row
+  is now backfilled with `case_name` and `known_flaky` from
+  `/o/c/cases/{id}` after the diff. This made `api × api` viable and
+  is what `run_triage_api.sh` uses by default. The remaining
+  `csv × api` combo still needs option (b) — look up CSV rows against
+  the Testray API by `(Case Name, Component)` to get `case_id` — or
+  reuse the new enrichment to populate names on the api side and join
+  on `(case_name, component_name)` instead. 1 of 2 remaining combos
+  unblocked.
 - Feature-flagged churn dampening — weight stored, not yet consumed by
   scoring or export
 - `is_forecast_row` = FALSE for all rows — fix pending in
@@ -202,7 +206,16 @@ labels now determines quality of the model later.
   defect outcomes
 - Claude Code quality measurement — LPD rate + CI first-submission pass
   rate before/after rollout; `ai_assisted` flag needed in
-  `fact_forecast_input`
+  `fact_forecast_input`. Note: `compare_classifiers.py` now enables
+  head-to-head comparison between Claude Code mode (`agent:*`) and API
+  mode (`api:*`) on the same build pair via the `classifier` column —
+  use this for quality drift checks.
+- Triage baseline drift detection — `compute_test_diff` only surfaces
+  PASSED→FAILED transitions, so a baseline build with any pre-existing
+  failures silently undercounts regressions. Surfaced 2026-04-25
+  comparing Pair 4 against a wider human-curated window. Fix: warn
+  when the baseline build had any non-PASSED status, or auto-walk back
+  to the last known clean build pair.
 
 ⚠️ **Do not re-run `export_looker.R` until upstream pipeline fixes are
 in place.**

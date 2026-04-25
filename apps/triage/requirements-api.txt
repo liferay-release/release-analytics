@@ -1,0 +1,13 @@
+# Extra dependencies for API-mode classification (apps/triage/classify_api.py).
+#
+# The base apps/triage/requirements.txt covers the default Claude-Code-driven
+# flow. These packages are only needed if you run the bundle through the
+# Anthropic API instead of classifying in a Claude Code session.
+#
+# Install alongside the base requirements:
+#   pip install -r apps/triage/requirements.txt -r apps/triage/requirements-api.txt
+#
+# Credentials: set ANTHROPIC_API_KEY in your environment. Never commit.
+
+anthropic>=0.40.0
+jsonschema>=4.10.0

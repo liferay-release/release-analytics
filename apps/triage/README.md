@@ -12,25 +12,48 @@ Part of the three-app structure:
 - `apps/dashboard/` — "How do we surface it?"
 
 **Status: PoC.** First successful end-to-end run completed April 2026
-against Routine 82964 (Release signal). Classification now happens inside
-the developer's own Claude Code session — the `anthropic` SDK and the
-old batch pipeline are retired.
+against Routine 82964 (Release signal).
+
+---
+
+## Two classification modes
+
+`prepare.py` produces a classifier-agnostic run bundle. Choose who
+reads it:
+
+| Mode | When | Entry point | Extra install |
+|---|---|---|---|
+| **Claude Code** (default) | Local dev — a developer classifies in their own Claude Code session | Open `runs/r_<id>/prompt.md` in-session, write `results.json` by hand | none |
+| **API** | Jenkins / headless / no Claude Code available | `python3 -m apps.triage.classify_api <run_dir>` | `pip install -r apps/triage/requirements-api.txt` + `ANTHROPIC_API_KEY` env var |
+
+Both modes consume the same bundle and produce the same `results.json`.
+The only thing that changes is the `classifier` label persisted to
+`fact_triage_results` — `agent:claude-opus-4-7` vs `api:claude-opus-4-7`
+— so the two paths are directly comparable for the same build pair.
 
 ---
 
 ## How it works
 
 ```
-prepare.py  →  runs/r_<id>/prompt.md + diff_list.csv + hunks.txt
-                 + git_diff_full.diff + results.schema.json + run.yml
-                          ↓
-            [Dev's Claude Code session reads prompt.md, classifies,
-             writes results.json — no API call from this repo]
-                          ↓
-submit.py   →  validates results.json against the schema,
-                 upserts into fact_triage_results + triage_run_log
-                 (or --no-upsert for inspection / laptop-only devs)
+┌─ Claude Code mode (local) ──────────────────┐  ┌─ API mode (Jenkins / headless) ──────┐
+│ prepare.py                                  │  │ run_triage_api.sh                    │
+│   ↓                                         │  │   (internally: prepare → classify    │
+│ runs/r_<id>/ (prompt.md, diff_list.csv,     │  │    via Anthropic API → submit)       │
+│              hunks.txt, schema, run.yml)    │  │                                      │
+│   ↓                                         │  │                                      │
+│ [Claude Code session reads prompt.md,       │  │                                      │
+│  writes results.json]                       │  │                                      │
+│   ↓                                         │  │                                      │
+│ submit.py → fact_triage_results             │  │ fact_triage_results                  │
+│   classifier: agent:claude-opus-4-7         │  │   classifier: api:claude-opus-4-7    │
+└─────────────────────────────────────────────┘  └──────────────────────────────────────┘
 ```
+
+Both modes consume the same bundle shape and produce the same
+`results.json`. The `classifier` label in `fact_triage_results`
+distinguishes them so runs on the same build pair are directly
+comparable — see `compare_classifiers.py`.
 
 Inside `prepare.py`:
 
@@ -58,8 +81,10 @@ auto-classified + flaky rows, and upserts under the classifier label from
 
 | File | Purpose |
 |---|---|
-| `prepare.py` | **Entry point 1** — build the run bundle. Baseline and target each pick a source: `db`, `csv`, or `api`. |
-| `submit.py` | **Entry point 2** — validate `results.json`, upsert into DB, or `--no-upsert` |
+| `run_triage_api.sh` | **API-mode entry point** — one-shot wrapper: prepare → classify via API → submit. No Claude Code in the loop. |
+| `prepare.py` | **Claude Code-mode entry point 1** — build the run bundle for classification in a Claude Code session. Also invoked internally by `run_triage_api.sh`. |
+| `classify_api.py` | **Internal to `run_triage_api.sh`** — sends a prepared bundle through the Anthropic API. Can also be run standalone for debugging. |
+| `submit.py` | **Claude Code-mode entry point 2** — validate `results.json` written by the Claude Code session, upsert into DB. Also invoked internally by `run_triage_api.sh`. |
 | `prompt_helpers.py` | Pre-classification patterns, diff parsing, test→hunk matching, name shortening |
 | `db.py` | DB connections — release_analytics + testray_analytical |
 | `module_matcher.py` | Maps diff file paths → component/team via `dim_module_component_map` |
@@ -80,6 +105,9 @@ cd ~/dev/projects/liferay-release-analytics
 python3 -m venv .venv
 source .venv/bin/activate
 pip install -r apps/triage/requirements.txt
+
+# API mode only — skip if you only classify via Claude Code
+pip install -r apps/triage/requirements-api.txt
 ```
 
 Always activate before running:
@@ -116,8 +144,10 @@ triage:
       - "your-extra-pattern-here"
 ```
 
-No Anthropic API key is needed or used. Classification happens in the
-developer's own Claude Code session.
+Claude Code mode needs no API key. For API mode, set
+`ANTHROPIC_API_KEY` in the environment (**never** put it in
+`config.yml`). API-mode tunables live under `triage.classifier.api.*`
+— see `config/config.yml.example`.
 
 ### 3. Testray DB permissions (if your local DB was bootstrapped fresh)
 
@@ -203,20 +233,54 @@ pages × 500, 0.3s between).
 
 ### Classify + submit (same for all source combos)
 
+**Option A — Claude Code (default, local dev):**
+
 ```bash
 # 2. Classify inside your own Claude Code session:
 #    open runs/r_<id>/prompt.md, write runs/r_<id>/results.json
 
 # 3. Submit
 python3 -m apps.triage.submit apps/triage/runs/r_<id>
+```
 
-# Or validate + print summary without writing to DB
+**Option B — API (Jenkins / headless):**
+
+```bash
+export ANTHROPIC_API_KEY=sk-ant-...
+
+# One-shot: prepare + classify via API + submit. No Claude Code in the loop.
+./apps/triage/run_triage_api.sh --build-a <A> --build-b <B>
+
+# Add --dry-run to see the batch plan with no API call / no submit.
+# Add --no-upsert to validate results.json without writing to DB.
+# Add --classifier <label> to override the default api:claude-opus-4-7.
+# Orthogonal --baseline-source / --target-source flags pass through to prepare.py
+# for csv or api sources — see ./apps/triage/run_triage_api.sh --help.
+```
+
+**Either mode** — validate + print summary without writing to DB:
+
+```bash
 python3 -m apps.triage.submit apps/triage/runs/r_<id> --no-upsert
 ```
 
-`prepare.py` also takes `--classifier <label>` to override the default
+`prepare.py` takes `--classifier <label>` to override the default
 (`agent:claude-opus-4-7`). The label is written to `run.yml` and then
-into `fact_triage_results.classifier`.
+into `fact_triage_results.classifier`. API mode defaults to
+`api:claude-opus-4-7` regardless of what `prepare.py` wrote — use
+`--classifier` on `classify_api.py` to override.
+
+**API batching and cost.** `classify_api.py` packs the failures in
+`prompt.md` into batches under `max_chars_per_batch` (default 400k
+chars ≈ 100k input tokens) and sends each as one API call. The shared
+header (context + rubric + output spec) is sent with Anthropic's
+`cache_control: ephemeral` on every batch, so only the first batch
+pays full price for it — subsequent batches read it at ~10% cost
+within the 5-minute cache window. A 320-failure bundle fits in ~4
+batches and is the primary reason batching matters; smaller bundles
+land in one call. Shrink `max_chars_per_batch` only if very large
+bundles hit output-token truncation. Cost per classification is
+dominated by input tokens, not call count.
 
 ---
 
@@ -233,7 +297,7 @@ In `apps/triage/runs/r_<id>/` (gitignored):
 | `test_fragments.txt` | Fragments fed into `extract_relevant_hunks.py` |
 | `prompt.md` | Instructions for the classification session |
 | `results.schema.json` | JSON schema for `results.json` |
-| `results.json` | **Written by the dev's Claude Code session** |
+| `results.json` | **Written by the Claude Code session, or by `classify_api.py`** |
 
 Persisted in `release_analytics`:
 
@@ -303,11 +367,14 @@ ORDER BY classifier, classification;
 
 Existing labels:
 
-- `batch:v1` — legacy Anthropic-API pipeline, 365 rows on the Routine
-  82964 historical pair (8 BUG / 38 NEEDS_REVIEW / 276 FALSE_POSITIVE /
-  43 AUTO_CLASSIFIED).
+- `batch:v1` — legacy Anthropic-API pipeline (Sonnet 4, markdown-table
+  response format), 365 rows on the Routine 82964 historical pair
+  (8 BUG / 38 NEEDS_REVIEW / 276 FALSE_POSITIVE / 43 AUTO_CLASSIFIED).
+  Retired — the current API path is `api:claude-opus-4-7` below.
 - `agent:claude-opus-4-7` — current default for in-session Claude Code
   classification.
+- `api:claude-opus-4-7` — current default for API-mode classification
+  via `classify_api.py` (Jenkins / headless).
 - `human` — reserved for manual overrides.
 - `smoke:*` — use for one-off round-trip tests, then delete.
 
@@ -338,6 +405,24 @@ app.properties, bnd.bnd, packageinfo, *.xml, *.properties, *.yml, *.yaml,
   caseresult object. Options: (a) follow the subtask link per result and
   resolve jira there; (b) accept the gap since most BUG classifications
   name a culprit file not a Jira ticket.
+- **Baseline drift detection** — `compute_test_diff` only surfaces
+  PASSED→FAILED transitions. If the baseline build had any test already
+  failing, those persist into the target as FAILED→FAILED and are
+  invisible to triage. Currently surfaced as a runtime `WARNING:` only
+  when fragments are empty; the underlying constraint isn't checked
+  generally. Surfaced 2026-04-25 when comparing Pair 4 against a
+  human-curated report whose wider window caught a 2nd failure the API
+  diff missed. Fix: warn when the baseline build had any non-PASSED
+  status before triage runs, and suggest the last known clean build
+  pair instead.
+- **API-mode tool-using mode (option D)** — current API mode is
+  single-shot prompt-only. For cases where a model needs to read source
+  files (e.g. verify import statements before asserting BUG), promote
+  to a tool-using API loop with `bash`/`grep`/`read` tools scoped to
+  liferay-portal. See `apps/triage/CLAUDE.md` "Future options" for the
+  trade-off. Not currently needed — Path 2.1 (E + manifest + commits +
+  rubric tightening) closes the common transitive-dep gap; revisit only
+  if real bugs start escaping that shape.
 - **Jira ticket auto-creation** (`create_jira_tickets.py`): Read
   `fact_triage_results` for a build, filter to BUG + NEEDS_REVIEW where
   `linked_issues` is null, create LPD tickets via Jira REST, write

@@ -213,11 +213,91 @@ def _testray_fetch_paginated(
     return items
 
 
+def fetch_case_metadata(case_ids: list[int], cfg: dict) -> dict[int, dict]:
+    """Fetch per-case metadata (name + flaky flag) from Testray's case object.
+    Returns {case_id: {"name": str, "flaky": bool}}; case_ids that 404 are
+    omitted. Used by enrich_api_case_names() to backfill test_case columns
+    that api caseresults don't populate.
+
+    One GET /o/c/cases/{id} per case_id; expected ≤ ~100 case_ids per run
+    after diff dedup, so per-id calls are acceptable. Batch via
+    `filter=id in (...)` if this becomes a hot path."""
+    if not case_ids:
+        return {}
+    token = _testray_oauth_token(cfg)
+    base = cfg["base_url"].rstrip("/")
+    out: dict[int, dict] = {}
+    for cid in case_ids:
+        url = f"{base}/o/c/cases/{cid}"
+        req = urllib.request.Request(
+            url, headers={"Authorization": f"Bearer {token}"},
+        )
+        try:
+            with urllib.request.urlopen(req, timeout=30) as resp:
+                body = json.loads(resp.read())
+        except urllib.error.HTTPError as e:
+            if e.code == 401:
+                raise SystemExit("Testray API 401 — token expired. Re-run.")
+            if e.code == 404:
+                continue
+            raise
+        out[int(cid)] = {
+            "name":  body.get("name") or "",
+            "flaky": str(body.get("flaky")).lower() == "true",
+        }
+        time.sleep(0.05)
+    return out
+
+
+def enrich_api_case_names(df: pd.DataFrame, cfg: dict) -> pd.DataFrame:
+    """When an api source contributed rows lacking `test_case` (api
+    caseresults don't carry case names), fetch names from the Testray case
+    object and backfill. Idempotent — does nothing if every row already has
+    a name. Also backfills `known_flaky` from the case-level flaky flag."""
+    if df.empty:
+        return df
+    name_col = "test_case"
+    if name_col not in df.columns:
+        return df
+    needs_mask = df[name_col].isna() | (df[name_col].astype(str).str.strip() == "")
+    if not needs_mask.any():
+        return df
+    case_ids = sorted({
+        int(x) for x in df.loc[needs_mask, "testray_case_id"].dropna()
+    })
+    if not case_ids:
+        return df
+
+    print(f"   enriching {len(case_ids)} case name(s) from Testray REST …")
+    metadata = fetch_case_metadata(case_ids, cfg)
+    if not metadata:
+        print(f"   no cases returned — leaving rows unenriched", file=sys.stderr)
+        return df
+
+    df = df.copy()
+    name_filled = 0
+    flaky_marked = 0
+    for cid, meta in metadata.items():
+        row_mask = df["testray_case_id"] == cid
+        if meta.get("name"):
+            current = df.loc[row_mask, name_col]
+            blank = current.isna() | (current.astype(str).str.strip() == "")
+            df.loc[row_mask & blank, name_col] = meta["name"]
+            name_filled += int(blank.sum())
+        if meta.get("flaky"):
+            df.loc[row_mask, "known_flaky"] = True
+            flaky_marked += int(row_mask.sum())
+    print(f"   filled {name_filled} test_case value(s); marked {flaky_marked} as known_flaky")
+    return df
+
+
 def fetch_build_caseresults_api(build_id: int, cfg: dict) -> pd.DataFrame:
     """Fetch all case results for a build via Testray REST. Same column shape
     as fetch_build_caseresults / parse_testray_csv; `case_name`,
-    `component_name`, `team_name`, `jira_issue` are left blank (Jira gap is
-    documented backlog — enrich via subtask link if needed)."""
+    `component_name`, `team_name`, `jira_issue` are left blank.
+    `case_name` is backfilled post-diff via `enrich_api_case_names()` so the
+    fragment-based hunk matcher has something to anchor on. Component, team,
+    and jira remain blank (separate per-case lookups — backlog)."""
     token = _testray_oauth_token(cfg)
     items = _testray_fetch_paginated(
         "/o/c/caseresults",
@@ -609,13 +689,34 @@ judge whether each failure is caused by a hunk in the diff.
 
 ## Rubric
 
-- **BUG** — a hunk in the diff plausibly caused this failure, OR a linked Jira confirms it, OR the component+error pattern clearly points at a code regression in this range. **MUST name a `culprit_file`**, even at low confidence. Downstream `pr_outcomes` training needs labeled culprits.
-- **NEEDS_REVIEW** — evidence genuinely insufficient after real investigation. Not a default; use sparingly.
-- **FALSE_POSITIVE** — not caused by code in this diff. Common patterns:
-  - Chronic intermittent (>30% fail rate across recent runs in unrelated builds)
-  - Environmental (DB, chrome version, CI infra, TEST_SETUP_ERROR)
+**Confidence is structural, not metadata.** Your `confidence` field gates which classification you may use:
+
+- **BUG** — only when confidence is **`high`** AND a hunk in the diff (direct or via imports/lifecycle) clearly caused the failure. **MUST name a `culprit_file`.** A plausible-sounding theory at `medium` confidence is NOT a BUG — it is NEEDS_REVIEW. A linked Jira ticket confirming the regression also qualifies.
+- **NEEDS_REVIEW** — the safe default for any of:
+  - Confidence is `medium` or `low` and you have a candidate theory you cannot fully verify from this prompt
+  - The failing test plausibly imports, extends, or depends on code in another changed module that has no hunk matching the test's name
+  - **Two or more ticket clusters (LPD/LPP/LPS-XXXXX) in this diff plausibly affect the failing test's space** — list all candidates separated by `; ` in `specific_change`. Do not pick the most plausible one; the human reviewer disambiguates.
+  - The error message is generic enough (e.g. "compileTestIntegrationJava failed", "BUILD FAILED", aggregate batch status) that multiple changes in this range could explain it
+  - You'd want a human to confirm before calling it
+- **FALSE_POSITIVE** — clearly environmental or genuinely unrelated. May be `high` confidence (timeouts, gradle build infrastructure, chrome version, TEST_SETUP_ERROR are confidently environmental). Common patterns:
+  - Environmental (DB, chrome version, CI infra, TEST_SETUP_ERROR, gradle build infrastructure)
   - Timeout/timing tolerance — almost never diff-caused
-  - No relevant hunk + error unrelated to any changed module
+  - Chronic intermittent (>30% fail rate across recent runs in unrelated builds)
+  - No relevant hunk + error unrelated to any changed module **AND** no plausible import / lifecycle / framework dependency
+
+### Transitive dependencies — do not dismiss without verification
+
+Per-failure hunks are matched by path tokens, but **a test class can fail because a file it _imports_ changed, even if the test's own file has no hunk in the diff**. You cannot read source files from this prompt — when:
+
+- the failing test's class name plausibly imports, extends, or depends on code in another changed module,
+- multiple commits in this range cluster under the same ticket (e.g. LPD-XXXXX) and touch related infrastructure,
+- a smoke test or site-initializer test fails and shared lifecycle / layout / importer code changed,
+
+…**default to NEEDS_REVIEW**, not FALSE_POSITIVE. Note the suspected file in `specific_change` so the human reviewer can verify the import. Do not invent reasons to dismiss — explicit dismissal of a plausible cluster ("the test's name doesn't match the changed file's name") is exactly the failure mode this rule is here to prevent.
+
+### Multiple candidate causes — list, don't pick
+
+If two or more ticket clusters in the diff plausibly affect the failing test's module (e.g. one cluster rewrote the persistence layer the test depends on, a second cluster restructured the test framework or build tooling), **classify NEEDS_REVIEW even at high confidence and list ALL candidates** in `specific_change`, separated by `; `. Locking in a single theory hides the alternatives from the human reviewer; enumerating them lets the reviewer pick. Generic error messages (build failed, compile error, batch failed) are a strong signal that multiple changes could explain the failure.
 
 Rows in `diff_list.csv` with `pre_classification` already set (BUILD_FAILURE, ENV_*, NO_ERROR) are auto-classified upstream and should **not** appear in `results.json`.
 
@@ -625,8 +726,9 @@ Rows in `diff_list.csv` with `pre_classification` already set (BUILD_FAILURE, EN
 2. Scan `hunks.txt` for files whose path contains tokens from `component_name` or `test_case`.
 3. If a hunk plausibly causes the error → **BUG**, name `culprit_file` = the specific file path from the diff.
 4. If a hunk is thematically related but not clearly the cause → **NEEDS_REVIEW**.
-5. If the error is a classic flake pattern (timeout, element-not-present, concurrent-thread assertion, setup error) and no hunk touches the relevant module → **FALSE_POSITIVE**.
-6. When the filtered `hunks.txt` seems too narrow, consult `git_diff_full.diff`.
+5. If no per-failure hunk matches, **check the changed-files manifest and commit cluster sections below** for transitive candidates (test class name → likely importee in a changed module). Note the candidate in `specific_change` and classify NEEDS_REVIEW.
+6. If the error is a classic flake pattern (timeout, element-not-present, concurrent-thread assertion, setup error) AND no hunk touches the relevant module AND no transitive candidate exists → **FALSE_POSITIVE**.
+7. When the filtered `hunks.txt` seems too narrow, consult `git_diff_full.diff`.
 
 ## Output
 
@@ -661,12 +763,145 @@ Add `--no-upsert` to inspect the validated summary without writing to `fact_tria
 
 _FAILURES_HEADER = "\n---\n\n## Failures to classify\n\n"
 
+_DIFF_HDR_RE = re.compile(r"^diff --git a/(.+?) b/(.+)$")
+_LPD_RE      = re.compile(r"\b((?:LPD|LPP|LPS)-\d+)\b")
+
+
+def _module_key(path: str) -> str:
+    """Group key for the file manifest. modules/<group>/<module>/... → that
+    module folder; other paths fall back to the top two segments."""
+    parts = path.split("/")
+    if len(parts) >= 3 and parts[0] == "modules" and parts[1] in ("apps", "dxp", "test"):
+        return "/".join(parts[:3]) + "/"
+    if len(parts) >= 2:
+        return "/".join(parts[:2]) + "/"
+    return parts[0]
+
+
+def parse_full_diff_manifest(diff_path: Path) -> dict[str, int]:
+    """Walk git_diff_full.diff once and return {file_path: lines_changed}.
+    Counts +/- lines (mirrors `git diff --stat`)."""
+    files: dict[str, int] = {}
+    current: str | None = None
+    count = 0
+    if not diff_path.exists():
+        return files
+    for line in diff_path.read_text(encoding="utf-8", errors="replace").splitlines():
+        m = _DIFF_HDR_RE.match(line)
+        if m:
+            if current is not None:
+                files[current] = count
+            current = m.group(2)
+            count = 0
+            continue
+        if line.startswith(("+", "-")) and not line.startswith(("+++", "---")):
+            count += 1
+    if current is not None:
+        files[current] = count
+    return files
+
+
+def fetch_commits_in_range(git_repo: Path, hash_a: str, hash_b: str) -> list[tuple[str, str]]:
+    """Run `git log A..B --pretty=format:'%h\\t%s'` in the liferay-portal
+    repo. Returns [(short_hash, subject), ...] in newest-first order."""
+    if not (git_repo / ".git").is_dir():
+        return []
+    try:
+        out = subprocess.run(
+            ["git", "-C", str(git_repo), "log",
+             "--pretty=format:%h\t%s", f"{hash_a}..{hash_b}"],
+            capture_output=True, text=True, check=True, timeout=30,
+        ).stdout
+    except (subprocess.SubprocessError, FileNotFoundError):
+        return []
+    commits = []
+    for line in out.splitlines():
+        if "\t" in line:
+            h, subj = line.split("\t", 1)
+            commits.append((h, subj))
+    return commits
+
+
+def render_changed_files_section(manifest: dict[str, int]) -> list[str]:
+    """Markdown block listing every changed file by module folder, sorted
+    by total lines descending. Gives the model a manifest for transitive-dep
+    inference when per-failure hunk matching is empty."""
+    if not manifest:
+        return []
+    by_module: dict[str, list[tuple[str, int]]] = {}
+    for path, lc in manifest.items():
+        by_module.setdefault(_module_key(path), []).append((path, lc))
+    total_files = len(manifest)
+    total_lines = sum(manifest.values())
+
+    lines = [
+        "## All changed files in this diff",
+        "",
+        f"_{total_files} files, {total_lines} +/- lines, grouped by module. "
+        f"Use this as a manifest of what changed across the diff. If a "
+        f"failing test plausibly imports or extends a file shown here that "
+        f"is **not** in its per-failure hunks above, treat it as a candidate "
+        f"culprit and classify NEEDS_REVIEW (not FALSE_POSITIVE) — note the "
+        f"candidate path in `specific_change`._",
+        "",
+    ]
+    for mod in sorted(by_module, key=lambda m: -sum(lc for _, lc in by_module[m])):
+        files = sorted(by_module[mod], key=lambda x: -x[1])
+        mod_total = sum(lc for _, lc in files)
+        lines.append(f"### {mod} ({mod_total} lines, {len(files)} file(s))")
+        for path, lc in files:
+            lines.append(f"- `{path}` ({lc})")
+        lines.append("")
+    lines.append("---")
+    lines.append("")
+    return lines
+
+
+def render_commits_section(commits: list[tuple[str, str]]) -> list[str]:
+    """Markdown block listing commits in this range, clustered by ticket
+    (LPD-XXXXX / LPP-XXXXX / LPS-XXXXX) when present. Multi-commit clusters
+    under one ticket often represent a single refactor — explicit candidate
+    root causes for transitive-dep failures."""
+    if not commits:
+        return []
+    by_ticket: dict[str, list[tuple[str, str]]] = {}
+    for h, subj in commits:
+        m = _LPD_RE.search(subj)
+        key = m.group(1) if m else "(no ticket)"
+        by_ticket.setdefault(key, []).append((h, subj))
+
+    lines = [
+        "## Commits in this range",
+        "",
+        f"_{len(commits)} commits between baseline and target. Multi-commit "
+        f"clusters under the same ticket often represent a single refactor — "
+        f"if a ticket touches a file related to a failing test (even via "
+        f"imports), treat the cluster as a candidate root cause._",
+        "",
+    ]
+    # Clusters with most commits first; "(no ticket)" last.
+    def sort_key(t: str) -> tuple[int, int, str]:
+        return (1 if t == "(no ticket)" else 0, -len(by_ticket[t]), t)
+    for ticket in sorted(by_ticket, key=sort_key):
+        cs = by_ticket[ticket]
+        if len(cs) > 1:
+            lines.append(f"### {ticket} ({len(cs)} commits)")
+        else:
+            lines.append(f"### {ticket}")
+        for h, subj in cs:
+            lines.append(f"- `{h}` {subj}")
+        lines.append("")
+    lines.append("---")
+    lines.append("")
+    return lines
+
 
 def write_prompt(run_dir: Path, *, run_id: str, classifier: str,
                  build_a: int, build_b: int, hash_a: str, hash_b: str,
                  routine_id: int | None, build_a_name: str, build_b_name: str,
                  df_to_classify: pd.DataFrame, df_auto: pd.DataFrame,
-                 df_flaky: pd.DataFrame, hunks_path: Path) -> None:
+                 df_flaky: pd.DataFrame, hunks_path: Path,
+                 full_diff_path: Path, git_repo: Path) -> None:
 
     try:
         diff_blocks = prompt_helpers.parse_diff_blocks(hunks_path)
@@ -746,10 +981,14 @@ def write_prompt(run_dir: Path, *, run_id: str, classifier: str,
                 )
             else:
                 body_lines.append(
-                    "_No diff hunk matched by path heuristics, and no shared-"
-                    "UI-chrome files changed either. Likely FALSE_POSITIVE "
-                    "unless the error specifically names a file also in the "
-                    "diff; scan `git_diff_full.diff` before deciding._"
+                    "_No diff hunk matched by path heuristics. Before "
+                    "concluding FALSE_POSITIVE, scan the **All changed files** "
+                    "and **Commits in this range** sections below for "
+                    "transitive candidates — this test class may import or "
+                    "extend code in a different changed module. If you find "
+                    "a plausible candidate you cannot fully verify from "
+                    "this prompt alone, classify NEEDS_REVIEW with the "
+                    "suspected file in `specific_change`._"
                 )
             body_lines.append("")
 
@@ -771,9 +1010,20 @@ def write_prompt(run_dir: Path, *, run_id: str, classifier: str,
         run_dir_name=run_dir.name,
     )
 
+    # Manifest + commits sections — give the model context for transitive
+    # deps when per-failure hunk matching is empty.
+    manifest = parse_full_diff_manifest(full_diff_path)
+    commits  = fetch_commits_in_range(git_repo, hash_a, hash_b) if hash_a and hash_b else []
+    manifest_lines = render_changed_files_section(manifest)
+    commit_lines   = render_commits_section(commits)
+
     parts = [header]
     if chrome_lines:
         parts.append("\n".join(chrome_lines))
+    if manifest_lines:
+        parts.append("\n".join(manifest_lines))
+    if commit_lines:
+        parts.append("\n".join(commit_lines))
     parts.append(_FAILURES_HEADER)
     parts.append("\n".join(body_lines))
     (run_dir / "prompt.md").write_text("".join(parts), encoding="utf-8")
@@ -864,6 +1114,8 @@ def _finalize_bundle(
         build_a_name=build_a_name, build_b_name=build_b_name,
         df_to_classify=df_to_cls, df_auto=df_auto, df_flaky=df_flaky,
         hunks_path=hunks_path,
+        full_diff_path=diff_path,
+        git_repo=git_repo,
     )
     write_run_yml(
         run_dir,
@@ -933,6 +1185,13 @@ def prepare(baseline: SideSpec, target: SideSpec, classifier: str) -> Path:
         raise SystemExit("test_diff returned 0 rows (no PASSED→FAILED after matching).")
     print(f"   {len(df)} regressions — status_b: "
           f"{df['status_b'].value_counts().to_dict()}")
+
+    # api caseresults don't carry case names. If either side is api,
+    # backfill test_case from the Testray case object so the fragment
+    # matcher has something to anchor on (and so prompt.md doesn't say
+    # `### N. \`\`` with no test name).
+    if SOURCE_API in (baseline.source, target.source):
+        df = enrich_api_case_names(df, cfg["testray"])
 
     print(f"→ Step 2/6 build metadata …")
     meta_a = resolve_side_metadata(baseline, testray_db)

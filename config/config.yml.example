@@ -91,8 +91,42 @@ sonarqube:
 testray:
   base_url: https://testray.liferay.com
   client_id:
-  client_secret: 
+  client_secret:
 
+triage:
+  # Absolute path to your local liferay-portal checkout. prepare.py
+  # reads diffs from this working tree.
+  git_repo_path: ~/dev/projects/liferay-portal
 
+  # Errors matching these patterns are auto-classified without sending
+  # them to a classifier. Saves cost and focuses the classifier on
+  # real candidates.
+  auto_classify_patterns:
+    BUILD_FAILURE:
+      - "The build failed prior to running the test"
+    ENV_CHROME:
+      - "chrome=100.0"
+      - "Session info: chrome=1"
 
-
+  # Classifier modes — two paths, same run bundle, same results.json
+  # contract.
+  #
+  #   claude_code (default)
+  #     A developer classifies in their Claude Code session by reading
+  #     prompt.md. No SDK install, no API key needed. Primary local flow.
+  #
+  #   api
+  #     apps/triage/classify_api.py sends the bundle to Anthropic via the
+  #     SDK. Used for Jenkins runs or environments without Claude Code.
+  #     Install: pip install -r apps/triage/requirements-api.txt
+  #     Credential: ANTHROPIC_API_KEY env var (never put the key here).
+  #
+  # Classifier label in fact_triage_results distinguishes the two
+  # (agent:claude-opus-4-7 vs api:claude-opus-4-7).
+  classifier:
+    api:
+      model: claude-opus-4-7
+      effort: xhigh                     # low | medium | high | xhigh | max
+      max_chars_per_batch: 400000       # ~100k input tokens per batch
+      max_output_tokens: 16000          # streamed, so no HTTP timeout risk
+      delay_between_batches_seconds: 2
