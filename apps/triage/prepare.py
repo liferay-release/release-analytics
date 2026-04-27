@@ -5,11 +5,18 @@ Build a triage run bundle for the dev's own Claude Code session to classify.
 
 Usage:
     python3 -m apps.triage.prepare \
-        --baseline-source {db,csv,api} --baseline-build-id <N> \
-            [--baseline-csv <path>] [--baseline-hash <sha>] [--baseline-name <str>] \
-        --target-source   {db,csv,api} --target-build-id <N> \
-            [--target-csv <path>] [--target-hash <sha>] [--target-name <str>] \
+        --baseline-source {db,csv,api,tar} --baseline-build-id <N> \
+            [--baseline-csv <path>] [--baseline-tar <path>] \
+            [--baseline-hash <sha>] [--baseline-name <str>] \
+        --target-source   {db,csv,api,tar} --target-build-id <N> \
+            [--target-csv <path>] [--target-tar <path>] \
+            [--target-hash <sha>] [--target-name <str>] \
         [--classifier <label>]
+
+tar source: Testray JUnit XML tar.gz (the format Jenkins ships to GCP / Testray
+before DB ingest). Behaves like csv — joins on (case_name, component_name);
+--{side}-build-id is optional (auto-extracted from testray.build.name in the
+XML); --{side}-hash is required.  tar × api is not supported (no shared key).
 
 Emits apps/triage/runs/r_<ts>_<A>_<B>/:
     run.yml              metadata (build ids, hashes, routine, sources)
@@ -30,9 +37,11 @@ import json
 import re
 import subprocess
 import sys
+import tarfile
 import time
 import urllib.parse
 import urllib.request
+import xml.etree.ElementTree as ET
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
@@ -54,7 +63,8 @@ DEFAULT_CLASSIFIER = "agent:claude-opus-4-7"
 SOURCE_DB  = "db"
 SOURCE_CSV = "csv"
 SOURCE_API = "api"
-SOURCES    = (SOURCE_DB, SOURCE_CSV, SOURCE_API)
+SOURCE_TAR = "tar"
+SOURCES    = (SOURCE_DB, SOURCE_CSV, SOURCE_API, SOURCE_TAR)
 
 GIT_DIFF_EXCLUDES = [
     ":!**/artifact.properties",
@@ -87,9 +97,10 @@ GIT_DIFF_EXCLUDES = [
 class SideSpec:
     """One side of the triage pair (baseline or target)."""
     role:     str            # "baseline" or "target"
-    source:   str            # SOURCE_DB | SOURCE_CSV | SOURCE_API
+    source:   str            # SOURCE_DB | SOURCE_CSV | SOURCE_API | SOURCE_TAR
     build_id: int
     csv:      Path | None = None
+    tar:      Path | None = None
     hash:     str  | None = None
     name:     str  | None = None
 
@@ -345,6 +356,95 @@ def parse_testray_csv(path: Path) -> pd.DataFrame:
     })
 
 
+_TAR_STATUS_MAP = {
+    "FAILED":      "FAILED",
+    "PASSED":      "PASSED",
+    "BLOCKED":     "BLOCKED",
+    "UNTESTED":    "UNTESTED",
+    "IN PROGRESS": "UNTESTED",
+    "DID NOT RUN": "UNTESTED",
+}
+
+
+def _extract_build_meta_from_tar(path: Path) -> dict:
+    """Read build-level properties from the first TESTS-*.xml in the archive.
+    Returns {'build_name': str|None, 'build_id': int|None}.
+    build_id is extracted from testray.build.name via ' - <N> - ' pattern."""
+    with tarfile.open(path, "r:gz") as tf:
+        for member in tf.getmembers():
+            basename = member.name.split("/")[-1]
+            if not (member.name.endswith(".xml") and basename.startswith("TESTS-")):
+                continue
+            f = tf.extractfile(member)
+            if f is None:
+                continue
+            try:
+                root = ET.parse(f).getroot()
+            except ET.ParseError:
+                continue
+            props = {
+                p.get("name"): p.get("value")
+                for p in root.findall(".//properties/property")
+                if p.get("name") and p.get("value")
+            }
+            build_name = props.get("testray.build.name")
+            build_id = None
+            if build_name:
+                m = re.search(r" - (\d+) - ", build_name)
+                if m:
+                    build_id = int(m.group(1))
+            return {"build_name": build_name, "build_id": build_id}
+    return {"build_name": None, "build_id": None}
+
+
+def parse_testray_tar(path: Path) -> pd.DataFrame:
+    """Parse a Testray JUnit XML tar.gz into the common case-result shape.
+
+    Same output columns as parse_testray_csv; case_id and jira_issue are blank
+    (not present in the pre-ingest XML format). Status values are normalized to
+    uppercase. Joins to a db/csv baseline on (case_name, component_name)."""
+    rows = []
+    with tarfile.open(path, "r:gz") as tf:
+        for member in tf.getmembers():
+            basename = member.name.split("/")[-1]
+            if not (member.name.endswith(".xml") and basename.startswith("TESTS-")):
+                continue
+            f = tf.extractfile(member)
+            if f is None:
+                continue
+            try:
+                root = ET.parse(f).getroot()
+            except ET.ParseError:
+                print(f"WARNING: could not parse {member.name} — skipping",
+                      file=sys.stderr)
+                continue
+            for tc in root.findall("testcase"):
+                tc_props = {
+                    p.get("name"): p.get("value")
+                    for p in tc.findall("properties/property")
+                    if p.get("name")
+                }
+                status_raw = (tc_props.get("testray.testcase.status") or "").upper()
+                failure_el = tc.find("failure")
+                rows.append({
+                    "case_id":        None,
+                    "case_name":      tc_props.get("testray.testcase.name"),
+                    "case_flaky":     None,
+                    "component_name": tc_props.get("testray.main.component.name"),
+                    "team_name":      tc_props.get("testray.team.name"),
+                    "status":         _TAR_STATUS_MAP.get(status_raw, status_raw) or None,
+                    "errors":         failure_el.get("message") if failure_el is not None else None,
+                    "jira_issue":     None,
+                })
+
+    if not rows:
+        raise SystemExit(
+            f"No test cases found in {path}. "
+            "Verify the archive contains TESTS-*.xml files."
+        )
+    return pd.DataFrame(rows)
+
+
 def fetch_caseresults(spec: SideSpec, cfg: dict) -> pd.DataFrame:
     """Dispatch a SideSpec to the matching fetcher."""
     if spec.source == SOURCE_DB:
@@ -354,6 +454,9 @@ def fetch_caseresults(spec: SideSpec, cfg: dict) -> pd.DataFrame:
         return parse_testray_csv(spec.csv)
     if spec.source == SOURCE_API:
         return fetch_build_caseresults_api(spec.build_id, cfg["testray"])
+    if spec.source == SOURCE_TAR:
+        assert spec.tar is not None
+        return parse_testray_tar(spec.tar)
     raise SystemExit(f"Unknown source: {spec.source}")
 
 
@@ -488,6 +591,7 @@ def resolve_side_metadata(spec: SideSpec, testray_db: dict) -> dict:
         spec.name
         or (row or {}).get("build_name")
         or (f"{spec.source}:{spec.csv.name}" if spec.source == SOURCE_CSV
+            else f"{spec.source}:{spec.tar.name}" if spec.source == SOURCE_TAR
             else f"{spec.source}:{spec.build_id}")
     )
     return {
@@ -1036,9 +1140,9 @@ def write_prompt(run_dir: Path, *, run_id: str, classifier: str,
 def validate_combo(baseline: SideSpec, target: SideSpec) -> None:
     """Hard-error on combos we can't currently join.
 
-    csv × api (either direction): CSV carries (case_name, component_name)
-    but no case_id; API carries case_id but no (case_name, component_name).
-    No common key → zero-row join.
+    csv/tar × api (either direction): CSV and tar carry (case_name,
+    component_name) but no case_id; API carries case_id but no names.
+    No common join key → zero-row join.
     """
     sides = {baseline.source, target.source}
     if sides == {SOURCE_CSV, SOURCE_API}:
@@ -1053,6 +1157,15 @@ def validate_combo(baseline: SideSpec, target: SideSpec) -> None:
             "\n"
             "Backlog: enrich api rows with case names (follow the case link), "
             "or csv rows with case_ids (lookup by (name, component))."
+        )
+    if sides == {SOURCE_TAR, SOURCE_API}:
+        raise SystemExit(
+            f"tar and api sources can't be combined "
+            f"(baseline={baseline.source}, target={target.source}). tar archives "
+            "carry (case_name, component_name) but no case_id; API responses "
+            "carry case_id but no names. No common join key.\n"
+            "\n"
+            "Workarounds: use db or csv on one side instead of api."
         )
 
 
@@ -1162,15 +1275,15 @@ def prepare(baseline: SideSpec, target: SideSpec, classifier: str) -> Path:
                          f"(source={target.source}).")
     print(f"   baseline rows: {len(baseline_df)}  target rows: {len(target_df)}")
 
-    if target.source == SOURCE_API:
-        print("   NOTE: api targets do not populate `linked_issues` — the Jira",
+    if target.source in (SOURCE_API, SOURCE_TAR):
+        print(f"   NOTE: {target.source} targets do not populate `linked_issues` — the Jira",
               file=sys.stderr)
         print("         column in diff_list.csv will be blank for target-side failures.",
               file=sys.stderr)
         print("         Use db or csv on the target if Jira ticket context is needed.",
               file=sys.stderr)
 
-    if target.source == SOURCE_CSV:
+    if target.source in (SOURCE_CSV, SOURCE_TAR):
         matched = target_df.merge(
             baseline_df[["case_name", "component_name"]].dropna(),
             on=["case_name", "component_name"], how="inner",
@@ -1224,26 +1337,34 @@ def prepare(baseline: SideSpec, target: SideSpec, classifier: str) -> Path:
 # ---------------------------------------------------------------------------
 
 def _add_side_args(ap: argparse.ArgumentParser, role: str) -> None:
-    """Add --{role}-source / --{role}-build-id / --{role}-csv / --{role}-hash /
-    --{role}-name to the parser."""
+    """Add --{role}-source / --{role}-build-id / --{role}-csv / --{role}-tar /
+    --{role}-hash / --{role}-name to the parser."""
     ap.add_argument(f"--{role}-source",   choices=SOURCES, required=True,
                     help=f"Where to load the {role} build's case results from.")
-    ap.add_argument(f"--{role}-build-id", type=int, required=True,
-                    help=f"Build id for the {role} build.")
+    ap.add_argument(f"--{role}-build-id", type=int, required=False, default=None,
+                    help=f"Build id for the {role} build. Required for db/csv/api; "
+                         f"optional for tar (auto-extracted from testray.build.name).")
     ap.add_argument(f"--{role}-csv",      type=Path, default=None,
                     help=f"Path to Testray CSV export "
                          f"(required when --{role}-source=csv).")
+    ap.add_argument(f"--{role}-tar",      type=Path, default=None,
+                    help=f"Path to Testray JUnit XML tar.gz "
+                         f"(required when --{role}-source=tar).")
     ap.add_argument(f"--{role}-hash",     default=None,
-                    help=f"Git hash for the {role} build. Required for csv; "
+                    help=f"Git hash for the {role} build. Required for csv/tar; "
                          f"for api, optional — falls back to dim_build.")
     ap.add_argument(f"--{role}-name",     default=None,
-                    help=f"Optional display name for the {role} build.")
+                    help=f"Optional display name for the {role} build. "
+                         f"For tar, auto-populated from testray.build.name if omitted.")
 
 
 def _build_spec(args: argparse.Namespace, role: str) -> SideSpec:
-    source = getattr(args, f"{role}_source")
-    csv    = getattr(args, f"{role}_csv")
-    hash_  = getattr(args, f"{role}_hash")
+    source   = getattr(args, f"{role}_source")
+    csv      = getattr(args, f"{role}_csv")
+    tar      = getattr(args, f"{role}_tar")
+    hash_    = getattr(args, f"{role}_hash")
+    build_id = getattr(args, f"{role}_build_id")
+    name     = getattr(args, f"{role}_name")
 
     if source == SOURCE_CSV:
         if csv is None:
@@ -1255,15 +1376,39 @@ def _build_spec(args: argparse.Namespace, role: str) -> SideSpec:
             raise SystemExit(f"--{role}-hash is required when --{role}-source=csv "
                              f"(CSV exports don't carry the build's git sha).")
 
+    if source == SOURCE_TAR:
+        if tar is None:
+            raise SystemExit(f"--{role}-tar is required when --{role}-source=tar.")
+        tar = tar.expanduser().resolve()
+        if not tar.exists():
+            raise SystemExit(f"{role} tar not found: {tar}")
+        if not hash_:
+            raise SystemExit(f"--{role}-hash is required when --{role}-source=tar "
+                             f"(tar archives don't carry the build's git sha).")
+        if build_id is None or name is None:
+            meta = _extract_build_meta_from_tar(tar)
+            if build_id is None:
+                build_id = meta["build_id"] or 0
+            if name is None:
+                name = meta.get("build_name")
+
+    if source not in (SOURCE_CSV, SOURCE_TAR) and build_id is None:
+        raise SystemExit(
+            f"--{role}-build-id is required when --{role}-source={source}."
+        )
+
     if source != SOURCE_CSV and csv is not None:
         print(f"WARNING: --{role}-csv ignored (source={source}).", file=sys.stderr)
+    if source != SOURCE_TAR and tar is not None:
+        print(f"WARNING: --{role}-tar ignored (source={source}).", file=sys.stderr)
 
     return SideSpec(
         role=role, source=source,
-        build_id=getattr(args, f"{role}_build_id"),
+        build_id=build_id if build_id is not None else 0,
         csv=csv if source == SOURCE_CSV else None,
+        tar=tar if source == SOURCE_TAR else None,
         hash=hash_,
-        name=getattr(args, f"{role}_name"),
+        name=name,
     )
 
 
@@ -1271,8 +1416,8 @@ def main() -> None:
     ap = argparse.ArgumentParser(
         description="Prepare a triage run bundle for in-session classification. "
                     "Each side (baseline, target) independently selects a source: "
-                    "db (testray_analytical), csv (Testray CSV export), or api "
-                    "(Testray REST).",
+                    "db (testray_analytical), csv (Testray CSV export), api "
+                    "(Testray REST), or tar (Jenkins JUnit XML tar.gz).",
     )
     _add_side_args(ap, "baseline")
     _add_side_args(ap, "target")
