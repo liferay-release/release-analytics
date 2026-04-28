@@ -33,6 +33,12 @@
 #   --target-source   ...      apps.triage.prepare (use for csv/api sides).
 #   --classifier <label>       Classifier label to record in
 #                              fact_triage_results (default: api:claude-opus-4-7).
+#   --by-subtask               Subtask-aware mode: group regressions by Testray
+#                              Subtask (testflow algorithm), classify once per
+#                              group, fan out the verdict across member case-rows.
+#                              Requires --target-source api (or --build-b alone
+#                              with no --target-source override). Pass through to
+#                              both prepare.py and classify_api.py.
 #   --no-upsert                Validate + print summary but skip DB writes.
 #   --dry-run                  Build the bundle and print the batch plan,
 #                              but make no API calls and do not submit.
@@ -60,6 +66,7 @@ BUILD_B=""
 CLASSIFIER=""
 NO_UPSERT=false
 DRY_RUN=false
+BY_SUBTASK=false
 PREPARE_EXTRA=()
 
 show_help() {
@@ -73,6 +80,7 @@ while [[ $# -gt 0 ]]; do
         --classifier)     CLASSIFIER="$2"; shift 2 ;;
         --no-upsert)      NO_UPSERT=true;  shift ;;
         --dry-run)        DRY_RUN=true;    shift ;;
+        --by-subtask)     BY_SUBTASK=true; shift ;;
         -h|--help)        show_help; exit 0 ;;
         # Orthogonal prepare-side flags — pass through verbatim.
         --baseline-source|--baseline-build-id|--baseline-csv|--baseline-hash|--baseline-name|\
@@ -138,6 +146,8 @@ echo "=========================================================="
 echo "Step 1/3: apps.triage.prepare"
 echo "=========================================================="
 
+[[ "$BY_SUBTASK" == true ]] && PREPARE_EXTRA+=(--by-subtask)
+
 # `tee /dev/stderr` shows prepare's progress live; command substitution
 # captures stdout so we can grep for the run_dir line.
 PREPARE_OUT=$(python3 -m apps.triage.prepare "${PREPARE_EXTRA[@]}" | tee /dev/stderr)
@@ -156,6 +166,12 @@ echo ""
 echo "=========================================================="
 echo "Step 2/3: apps.triage.classify_api"
 echo "=========================================================="
+
+# Default classifier picks up subtask mode automatically so fact_triage_results
+# rows from --by-subtask runs are distinguishable in head-to-head comparisons.
+if [[ -z "$CLASSIFIER" && "$BY_SUBTASK" == true ]]; then
+    CLASSIFIER="api:claude-opus-4-7+testflow"
+fi
 
 CLASSIFY_ARGS=("$RUN_DIR")
 [[ -n "$CLASSIFIER" ]] && CLASSIFY_ARGS+=(--classifier "$CLASSIFIER")

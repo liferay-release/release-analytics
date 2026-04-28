@@ -42,6 +42,7 @@ import time
 import urllib.parse
 import urllib.request
 import xml.etree.ElementTree as ET
+from collections import Counter
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
@@ -65,6 +66,15 @@ SOURCE_CSV = "csv"
 SOURCE_API = "api"
 SOURCE_TAR = "tar"
 SOURCES    = (SOURCE_DB, SOURCE_CSV, SOURCE_API, SOURCE_TAR)
+
+# Triage mode — per-test (default) or by-subtask (testflow-aware grouping).
+# Subtask mode classifies once per Testray Subtask and fans the verdict out
+# to the member case-rows in fact_triage_results. Target source must be `api`
+# for subtask mode (the subtask link lives on the caseresult object — see
+# r_subtaskToCaseResults_c_subtaskId — which only the api fetch reads).
+MODE_PER_TEST   = "per-test"
+MODE_BY_SUBTASK = "by-subtask"
+MODES           = (MODE_PER_TEST, MODE_BY_SUBTASK)
 
 GIT_DIFF_EXCLUDES = [
     ":!**/artifact.properties",
@@ -393,7 +403,15 @@ def fetch_build_caseresults_api(build_id: int, cfg: dict) -> pd.DataFrame:
     `component_name`, `team_name`, `jira_issue` are left blank.
     `case_name` is backfilled post-diff via `enrich_api_case_names()` so the
     fragment-based hunk matcher has something to anchor on. Component, team,
-    and jira remain blank (separate per-case lookups — backlog)."""
+    and jira remain blank (separate per-case lookups — backlog).
+
+    Also pulls `r_subtaskToCaseResults_c_subtaskId` so subtask-mode triage
+    (--by-subtask) can group failures by Testray Subtask without a second
+    round-trip. The field is 0/null on builds that don't have a testflow,
+    which is the common case for baselines and pre-testflow targets — the
+    subtask_id column is left as 0 in that case and downstream code treats
+    0/NaN as 'no subtask link'.
+    """
     token = _testray_oauth_token(cfg)
     items = _testray_fetch_paginated(
         "/o/c/caseresults",
@@ -401,6 +419,7 @@ def fetch_build_caseresults_api(build_id: int, cfg: dict) -> pd.DataFrame:
             "filter": f"r_buildToCaseResult_c_buildId eq '{build_id}'",
             "fields": "id,dueStatus,errors,"
                       "r_caseToCaseResult_c_caseId,"
+                      "r_subtaskToCaseResults_c_subtaskId,"
                       "r_componentToCaseResult_c_componentId,"
                       "r_teamToCaseResult_c_teamId",
         },
@@ -417,6 +436,8 @@ def fetch_build_caseresults_api(build_id: int, cfg: dict) -> pd.DataFrame:
         "status":         [(it.get("dueStatus") or {}).get("key") for it in items],
         "errors":         [it.get("errors") for it in items],
         "jira_issue":     [None] * len(items),
+        "subtask_id":     [it.get("r_subtaskToCaseResults_c_subtaskId") or 0
+                           for it in items],
     })
 
 
@@ -610,6 +631,18 @@ def compute_test_diff(baseline: pd.DataFrame, target: pd.DataFrame) -> pd.DataFr
         "error_message":          diff["errors_b"],
         "linked_issues":          diff["jira_issue_b"],
     })
+
+    # Propagate target-side subtask_id when present. Column name depends on
+    # which sides carried it through the merge: `subtask_id_b` when both
+    # sides had it (api×api), bare `subtask_id` when only target carried it,
+    # absent when target source is db/csv/tar.
+    if "subtask_id_b" in diff.columns:
+        out["subtask_id"] = diff["subtask_id_b"]
+    elif "subtask_id" in diff.columns and target_has_ids:
+        out["subtask_id"] = diff["subtask_id"]
+    # else: leave subtask_id off the dataframe; subtask mode will reject the
+    # combo upstream in validate_combo_for_mode().
+
     out = out.dropna(subset=["testray_case_id"]).reset_index(drop=True)
     return out
 
@@ -821,14 +854,62 @@ def write_results_schema(run_dir: Path) -> None:
     )
 
 
+# Subtask-mode results schema: one entry per Testray Subtask, with the
+# member case_ids the verdict fans out to. submit.py replicates the verdict
+# across every case_id in the array when writing fact_triage_results.
+RESULTS_SCHEMA_SUBTASK = {
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "title": "TriageResultsBySubtask",
+    "type": "object",
+    "required": ["run_id", "classifier", "results"],
+    "additionalProperties": False,
+    "properties": {
+        "run_id":     {"type": "string"},
+        "classifier": {"type": "string"},
+        "notes":      {"type": "string"},
+        "results": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "required": ["subtask_id", "case_ids", "classification",
+                             "confidence", "reason"],
+                "additionalProperties": False,
+                "properties": {
+                    "subtask_id":      {"type": ["integer", "null"]},
+                    "case_ids":        {"type": "array",
+                                          "items": {"type": "integer"},
+                                          "minItems": 1},
+                    "classification":  {"enum": ["BUG", "NEEDS_REVIEW",
+                                                  "FALSE_POSITIVE"]},
+                    "confidence":      {"enum": ["high", "medium", "low"]},
+                    "culprit_file":    {"type": ["string", "null"]},
+                    "specific_change": {"type": ["string", "null"]},
+                    "reason":          {"type": "string"},
+                },
+                "if":   {"properties": {"classification": {"const": "BUG"}}},
+                "then": {"required": ["culprit_file"],
+                          "properties": {"culprit_file": {"type": "string"}}},
+            },
+        },
+    },
+}
+
+
+def write_results_schema_subtask(run_dir: Path) -> None:
+    (run_dir / "results.schema.json").write_text(
+        json.dumps(RESULTS_SCHEMA_SUBTASK, indent=2), encoding="utf-8",
+    )
+
+
 def write_run_yml(run_dir: Path, *, run_id: str,
                   baseline_source: str, target_source: str,
                   build_a: int, build_b: int, hash_a: str, hash_b: str,
                   routine_id: int | None, build_a_name: str, build_b_name: str,
                   classifier: str, total_failures: int, auto_classified: int,
-                  flaky_excluded: int) -> None:
+                  flaky_excluded: int, mode: str = MODE_PER_TEST) -> None:
     metadata = {
         "run_id":              run_id,
+        "mode":                mode,
         "baseline_source":     baseline_source,
         "target_source":       target_source,
         "classifier":          classifier,
@@ -951,6 +1032,107 @@ Add `--no-upsert` to inspect the validated summary without writing to `fact_tria
 """
 
 _FAILURES_HEADER = "\n---\n\n## Failures to classify\n\n"
+
+PROMPT_HEADER_SUBTASK = """# Triage run `{run_id}` — subtask mode
+
+Classify PASSED→FAILED/BLOCKED/UNTESTED test regressions between two builds.
+**Unit of analysis: Testray Subtask.** Each block below groups N case results
+that share a single error fingerprint (Testray's testflow algorithm); you
+write **one verdict per subtask**, and `submit.py` fans the verdict out to
+every member case-row in `fact_triage_results`.
+
+## Context
+
+- **Baseline (A):** {build_a} — `{hash_a_short}` — {build_a_name}
+- **Target   (B):** {build_b} — `{hash_b_short}` — {build_b_name}
+- **Routine:** {routine_id}
+- **Classifier:** `{classifier}`
+- **Subtasks to classify:** {n_subtasks}  (covering {n_member_cases} case results;
+  + {n_auto} auto-classified, + {n_flaky} known-flaky excluded)
+
+## Files in this run
+
+| File | What it is |
+|---|---|
+| `diff_list.csv` | One row per failure (case-grain) — same as per-test mode |
+| `diff_list_subtasks.csv` | One row per subtask group — `subtask_id`, `case_count`, `member_case_ids`, shared `error`, `pre_classification` if every member auto-classified |
+| `hunks.txt` | Git diff filtered to files matching failing tests — your primary evidence |
+| `git_diff_full.diff` | Full unfiltered diff — consult if `hunks.txt` looks too narrow |
+| `results.schema.json` | JSON schema for the `results.json` you will write (subtask-mode shape) |
+
+## Rubric
+
+Same rubric as per-test mode, applied at the subtask level — write one verdict per group:
+
+- **BUG** — only when confidence is **`high`** AND a hunk in the diff (direct or via imports/lifecycle) clearly caused the *shared* error across all members. **MUST name a `culprit_file`.** A plausible-sounding theory at `medium` confidence is NOT a BUG — it is NEEDS_REVIEW.
+- **NEEDS_REVIEW** — the safe default for any of:
+  - Confidence is `medium` or `low` and you have a candidate theory you cannot fully verify from this prompt
+  - Members of the group plausibly import, extend, or depend on code in another changed module that has no hunk matching their names
+  - **Two or more ticket clusters (LPD/LPP/LPS-XXXXX) in this diff plausibly affect this group's space** — list all candidates separated by `; ` in `specific_change`
+  - The error is generic enough (build failed, batch failed, "Failed prior to running test") that multiple changes could explain it
+  - You'd want a human to confirm before calling it
+- **FALSE_POSITIVE** — clearly environmental or genuinely unrelated. May be `high` confidence (timeouts, gradle build infrastructure, TEST_SETUP_ERROR, Poshi `ElementNotFoundPoshiRunnerException`, Selenium `NoSuchElementException`). The fact that one verdict covers many tests makes the rubric *more* useful here, not less — a Poshi flake pattern is still a Poshi flake pattern when 30 tests share it.
+
+### Transitive dependencies — do not dismiss without verification
+
+A subtask can fail because a file the member tests _import_ changed, even if no member test's file has a direct hunk in the diff. When members plausibly import, extend, or depend on code in another changed module, default to NEEDS_REVIEW. Note the suspected file in `specific_change`.
+
+### Multiple candidate causes — list, don't pick
+
+If two or more ticket clusters in the diff plausibly affect the group's space, classify NEEDS_REVIEW (even at high confidence) and list ALL candidates in `specific_change`, separated by `; `.
+
+Subtasks where every member already has `pre_classification` set are auto-classified upstream and **must not** appear in `results.json` — they are listed in this prompt for traceability only.
+
+## How to classify, per subtask
+
+1. Read the **shared error** at the top of the subtask block — it's the same error string Testray clustered all member case-results under.
+2. Scan `hunks.txt` for files whose path contains tokens from any member's `test_case` or `component_name`. The matched hunks for representative members are embedded inline.
+3. Hunk plausibly causes the *shared* error → **BUG**, name `culprit_file` = the specific file path from the diff.
+4. Hunk thematically related but not the clear cause → **NEEDS_REVIEW**.
+5. No per-member hunk matches, **check the changed-files manifest and commit cluster sections below** for transitive candidates (member class names → likely importees in changed modules). Note the candidate in `specific_change` and classify NEEDS_REVIEW.
+6. Classic flake pattern (timeout, element-not-present, concurrent-thread assertion, TEST_SETUP_ERROR) AND no hunk touches a relevant module AND no transitive candidate → **FALSE_POSITIVE**.
+7. When the filtered `hunks.txt` seems too narrow, consult `git_diff_full.diff`.
+
+## Output
+
+Write `results.json` in this directory, validating against `results.schema.json`. **One entry per subtask** (not per case):
+
+```json
+{{
+  "run_id": "{run_id}",
+  "classifier": "{classifier}",
+  "results": [
+    {{
+      "subtask_id": 469572218,
+      "case_ids": [65638, 65644, 65650],
+      "classification": "FALSE_POSITIVE",
+      "confidence": "high",
+      "reason": "Classic Poshi ElementNotFoundPoshiRunnerException — selector/timing flake. No hunks touch the cookies-banner selectors involved."
+    }},
+    {{
+      "subtask_id": null,
+      "case_ids": [12345],
+      "classification": "BUG",
+      "confidence": "high",
+      "culprit_file": "modules/apps/.../Foo.java",
+      "specific_change": "Foo.java:42 removed null check in bar()",
+      "reason": "Diff removed the null check the test relies on."
+    }}
+  ]
+}}
+```
+
+`subtask_id` may be `null` for cases the testflow didn't group (one-off failures); `case_ids` always lists every member that should inherit this verdict.
+
+Then submit:
+
+```
+python3 apps/triage/submit.py runs/{run_dir_name}
+```
+
+Add `--no-upsert` to inspect the validated summary without writing to `fact_triage_results`.
+
+"""
 
 _DIFF_HDR_RE = re.compile(r"^diff --git a/(.+?) b/(.+)$")
 _LPD_RE      = re.compile(r"\b((?:LPD|LPP|LPS)-\d+)\b")
@@ -1219,6 +1401,325 @@ def write_prompt(run_dir: Path, *, run_id: str, classifier: str,
 
 
 # ---------------------------------------------------------------------------
+# Subtask mode — group regressions by Testray Subtask, write per-subtask
+# bundle artifacts (diff_list_subtasks.csv + per-subtask prompt blocks).
+# ---------------------------------------------------------------------------
+
+def compute_subtask_groups(df: pd.DataFrame) -> list[dict]:
+    """Group regression cases by `subtask_id`. Cases without a subtask link
+    (subtask_id 0 / NaN — common when the testflow didn't cluster them or
+    the build pre-dates testflow) become singleton groups so nothing is
+    silently dropped.
+
+    Returns a list of dicts, one per group:
+        subtask_id      — int Testray subtask id, or None if unmapped
+        case_ids        — [int, ...]
+        test_cases      — [str, ...]
+        components      — [str, ...] unique
+        shared_error    — most common error string across members
+        all_errors      — set of distinct error strings (size > 1 means
+                          the group has internal error variation; usually
+                          stays 1 since Testray groups by error fingerprint)
+        linked_issues   — [str, ...] unique non-empty
+        size            — len(case_ids)
+        all_pre_classified — bool: every member already auto-classified
+        pre_classifications — set of pre_classification labels seen
+        any_known_flaky — bool: at least one member is known_flaky
+        all_known_flaky — bool: every member is known_flaky
+        status_b_breakdown — Counter of status_b across members
+    """
+    if df.empty or "subtask_id" not in df.columns:
+        return []
+
+    work = df.copy()
+    # Treat 0/NaN as "no subtask link" → assign each such case its own
+    # synthetic group key so they don't collide.
+    work["_grp_key"] = work["subtask_id"].fillna(0).astype("int64")
+    next_synth = -1
+    for idx in work.index:
+        if int(work.at[idx, "_grp_key"]) == 0:
+            work.at[idx, "_grp_key"] = next_synth
+            next_synth -= 1
+
+    groups: list[dict] = []
+    for grp_key, sub in work.groupby("_grp_key", sort=False):
+        # Real subtask_ids are positive Testray ids; synthetic keys are
+        # negative and represent unmapped singletons (subtask_id = None).
+        real_sid = int(grp_key) if grp_key > 0 else None
+        errors_list = [e for e in sub["error_message"].fillna("") if e]
+        err_counts = Counter(errors_list)
+        shared_error = err_counts.most_common(1)[0][0] if err_counts else ""
+
+        components = sorted({c for c in sub.get("component_name", pd.Series([])).fillna("") if c}) \
+                   or sorted({c for c in sub.get("testray_component_name", pd.Series([])).fillna("") if c})
+        jiras = sorted({j for j in sub["linked_issues"].fillna("") if j})
+
+        pre_set = {p for p in sub["pre_classification"].fillna("") if p}
+        all_auto  = bool(pre_set) and sub["pre_classification"].notna().all()
+        flaky_col = sub["known_flaky"].fillna(False).astype(bool)
+
+        groups.append({
+            "subtask_id":          real_sid,
+            "case_ids":            [int(x) for x in sub["testray_case_id"].tolist()],
+            "test_cases":          [str(x) if pd.notna(x) else "" for x in sub["test_case"].tolist()],
+            "components":          components,
+            "shared_error":        shared_error,
+            "all_errors":          set(err_counts.keys()),
+            "linked_issues":       jiras,
+            "size":                len(sub),
+            "all_pre_classified":  all_auto,
+            "pre_classifications": pre_set,
+            "any_known_flaky":     bool(flaky_col.any()),
+            "all_known_flaky":     bool(flaky_col.all()),
+            "status_b_breakdown":  Counter(sub["status_b"].fillna("FAILED").tolist()),
+        })
+
+    # Sort: classifiable groups (not all-flaky, not all-auto) first by size desc;
+    # auto and flaky-only groups at the end.
+    def sort_key(g):
+        skip_pri = (1 if g["all_known_flaky"] else 0,
+                    1 if g["all_pre_classified"] else 0)
+        return (skip_pri, -g["size"])
+    groups.sort(key=sort_key)
+    return groups
+
+
+def write_diff_list_subtasks(run_dir: Path, groups: list[dict]) -> None:
+    """One row per subtask group. Member case-ids are joined with `|` so the
+    file stays CSV-readable; submit.py parses them back.
+
+    `bucket` marks how _finalize_bundle categorized the group:
+      classifiable / auto-only / flaky-only. Subtasks with mixed members
+      (some classifiable + some auto + some flaky) land in `classifiable` —
+      the verdict covers all member case-rows, with submit.py giving
+      pre-classified members AUTO_CLASSIFIED and dropping flaky members."""
+    rows = []
+    for g in groups:
+        if g["all_known_flaky"]:
+            bucket = "flaky-only"
+        elif g["all_pre_classified"]:
+            bucket = "auto-only"
+        else:
+            bucket = "classifiable"
+        rows.append({
+            "subtask_id":         g["subtask_id"] if g["subtask_id"] is not None else "",
+            "case_count":         g["size"],
+            "bucket":             bucket,
+            "member_case_ids":    "|".join(str(c) for c in g["case_ids"]),
+            "member_test_cases":  "|".join(g["test_cases"]),
+            "components":         "|".join(g["components"]),
+            "shared_error":       g["shared_error"],
+            "linked_issues":      "|".join(g["linked_issues"]),
+            "any_known_flaky":    g["any_known_flaky"],
+            "all_known_flaky":    g["all_known_flaky"],
+            "all_pre_classified": g["all_pre_classified"],
+            "pre_classifications": "|".join(sorted(g["pre_classifications"])),
+            "status_b_breakdown": "|".join(f"{k}={v}" for k, v in g["status_b_breakdown"].items()),
+        })
+    pd.DataFrame(rows).to_csv(run_dir / "diff_list_subtasks.csv", index=False)
+
+
+def write_prompt_subtask(run_dir: Path, *, run_id: str, classifier: str,
+                          build_a: int, build_b: int, hash_a: str, hash_b: str,
+                          routine_id: int | None, build_a_name: str, build_b_name: str,
+                          groups_to_classify: list[dict],
+                          groups_auto: list[dict],
+                          groups_flaky: list[dict],
+                          n_member_cases: int,
+                          n_auto_cases: int, n_flaky_cases: int,
+                          hunks_path: Path,
+                          full_diff_path: Path, git_repo: Path) -> None:
+    """Subtask-mode prompt. Same chrome / manifest / commits sections as
+    write_prompt; per-failure body is one block per subtask group."""
+
+    try:
+        diff_blocks = prompt_helpers.parse_diff_blocks(hunks_path)
+    except FileNotFoundError:
+        diff_blocks = {}
+
+    chrome_changes = prompt_helpers.find_ui_chrome_changes(diff_blocks)
+
+    chrome_lines: list[str] = []
+    if chrome_changes:
+        chrome_lines.append("## UI chrome changes")
+        chrome_lines.append("")
+        chrome_lines.append(
+            "Files changed in shared layout / navigation / taglib / theme "
+            "paths — these can break UI tests in *other* components. Cross-"
+            "reference against per-subtask sections below when the shared "
+            "error is UI-shaped (strict mode violation, element-not-found, "
+            "visibility timeout, getByText not found)."
+        )
+        chrome_lines.append("")
+        chrome_lines.append(f"_{len(chrome_changes)} shared-UI files changed. "
+                            f"Sorted by change size, smallest last._")
+        chrome_lines.append("")
+        chrome_lines.append("| Changed lines | File |")
+        chrome_lines.append("|---:|---|")
+        for path, n in chrome_changes:
+            chrome_lines.append(f"| {n} | `{path}` |")
+        chrome_lines.append("")
+        chrome_lines.append("---")
+        chrome_lines.append("")
+
+    has_chrome = bool(chrome_changes)
+    body_lines: list[str] = []
+
+    def render_group(idx: int, g: dict, *, kind: str) -> None:
+        """kind: 'classify' | 'auto' | 'flaky'."""
+        sid = g["subtask_id"]
+        sid_label = f"subtask_id={sid}" if sid is not None else "no subtask link (singleton)"
+        members_label = f"{g['size']} case(s)"
+        header = f"### {idx}. Subtask {sid_label} — {members_label}"
+        body_lines.append(header)
+
+        meta_parts = [f"**case_ids:** {', '.join(str(c) for c in g['case_ids'][:8])}"]
+        if g["size"] > 8:
+            meta_parts[-1] += f" (+ {g['size'] - 8} more)"
+        if g["components"]:
+            meta_parts.append(f"**components:** {', '.join(g['components'][:5])}")
+        meta_parts.append(f"**status_b:** {dict(g['status_b_breakdown'])}")
+        body_lines.append(" · ".join(meta_parts))
+
+        if g["linked_issues"]:
+            body_lines.append(f"**jira:** {', '.join(g['linked_issues'][:5])}")
+
+        err = (g["shared_error"] or "")[:600].replace("\n", " ")
+        body_lines.append(f"**shared_error:** {err}")
+
+        if kind == "auto":
+            body_lines.append(f"_All members already auto-classified upstream "
+                              f"({', '.join(sorted(g['pre_classifications']))}). "
+                              f"Listed for traceability — do NOT write a results.json entry for this subtask._")
+            body_lines.append("")
+            body_lines.append("---")
+            body_lines.append("")
+            return
+        if kind == "flaky":
+            body_lines.append(f"_All members marked known_flaky upstream and "
+                              f"will be excluded from fact_triage_results. "
+                              f"Listed for traceability — do NOT write a results.json entry for this subtask._")
+            body_lines.append("")
+            body_lines.append("---")
+            body_lines.append("")
+            return
+
+        # Member list
+        body_lines.append("")
+        body_lines.append("**members:**")
+        for cid, tc in zip(g["case_ids"][:12], g["test_cases"][:12]):
+            short = prompt_helpers.shorten_test_name(str(tc or ""))
+            body_lines.append(f"- [{cid}] `{short}`")
+        if g["size"] > 12:
+            body_lines.append(f"- _… and {g['size'] - 12} more — see diff_list_subtasks.csv_")
+        body_lines.append("")
+
+        # Hunks: union of per-member fragment matches across the group's
+        # representative members. Cap to avoid bloating the prompt.
+        seen_files: set[str] = set()
+        union_blocks: list[tuple[str, str]] = []
+        for tc in g["test_cases"][:6]:
+            if not tc:
+                continue
+            blocks = prompt_helpers.find_diff_blocks(
+                test_case=str(tc),
+                component_name=(g["components"][0] if g["components"] else None),
+                matched_diff_files=None,
+                diff_blocks=diff_blocks,
+            )
+            for fp, hunk in blocks:
+                if fp in seen_files:
+                    continue
+                seen_files.add(fp)
+                union_blocks.append((fp, hunk))
+                if len(union_blocks) >= 8:
+                    break
+            if len(union_blocks) >= 8:
+                break
+
+        if union_blocks:
+            for fp, hunk in union_blocks:
+                body_lines.append(f"```diff")
+                body_lines.append(hunk)
+                body_lines.append("```")
+                body_lines.append("")
+        else:
+            if has_chrome:
+                body_lines.append(
+                    "_No direct hunk match by path for any member. If the "
+                    "shared error is UI-shaped, cross-check the **UI chrome "
+                    "changes** section at the top — a shared layout or "
+                    "navigation file may be the real culprit even though no "
+                    "member's component matches. Consult `git_diff_full.diff` "
+                    "to confirm._"
+                )
+            else:
+                body_lines.append(
+                    "_No diff hunk matched by path heuristics. Before "
+                    "concluding FALSE_POSITIVE, scan the **All changed files** "
+                    "and **Commits in this range** sections below for "
+                    "transitive candidates — member tests may import or extend "
+                    "code in a different changed module. If you find a "
+                    "plausible candidate you cannot fully verify from this "
+                    "prompt alone, classify NEEDS_REVIEW with the suspected "
+                    "file in `specific_change`._"
+                )
+            body_lines.append("")
+
+        body_lines.append("---")
+        body_lines.append("")
+
+    idx = 0
+    for g in groups_to_classify:
+        idx += 1
+        render_group(idx, g, kind="classify")
+
+    if groups_auto:
+        body_lines.append("\n## Auto-classified subtasks (do NOT write results.json entries)\n")
+        for g in groups_auto:
+            idx += 1
+            render_group(idx, g, kind="auto")
+
+    if groups_flaky:
+        body_lines.append("\n## Flaky-only subtasks (excluded from fact_triage_results)\n")
+        for g in groups_flaky:
+            idx += 1
+            render_group(idx, g, kind="flaky")
+
+    header = PROMPT_HEADER_SUBTASK.format(
+        run_id=run_id,
+        classifier=classifier,
+        build_a=build_a, build_b=build_b,
+        hash_a_short=hash_a[:12] if hash_a else "?",
+        hash_b_short=hash_b[:12] if hash_b else "?",
+        routine_id=routine_id if routine_id is not None else "unknown",
+        build_a_name=build_a_name,
+        build_b_name=build_b_name,
+        n_subtasks=len(groups_to_classify),
+        n_member_cases=n_member_cases,
+        n_auto=n_auto_cases,
+        n_flaky=n_flaky_cases,
+        run_dir_name=run_dir.name,
+    )
+
+    manifest = parse_full_diff_manifest(full_diff_path)
+    commits  = fetch_commits_in_range(git_repo, hash_a, hash_b) if hash_a and hash_b else []
+    manifest_lines = render_changed_files_section(manifest)
+    commit_lines   = render_commits_section(commits)
+
+    parts = [header]
+    if chrome_lines:
+        parts.append("\n".join(chrome_lines))
+    if manifest_lines:
+        parts.append("\n".join(manifest_lines))
+    if commit_lines:
+        parts.append("\n".join(commit_lines))
+    parts.append(_FAILURES_HEADER)
+    parts.append("\n".join(body_lines))
+    (run_dir / "prompt.md").write_text("".join(parts), encoding="utf-8")
+
+
+# ---------------------------------------------------------------------------
 # Orchestrator
 # ---------------------------------------------------------------------------
 
@@ -1231,6 +1732,19 @@ def validate_combo(baseline: SideSpec, target: SideSpec) -> None:
     return
 
 
+def validate_mode(baseline: SideSpec, target: SideSpec, mode: str) -> None:
+    """Subtask mode requires target source = api so the caseresult endpoint
+    can return r_subtaskToCaseResults_c_subtaskId. db/csv/tar targets don't
+    expose the subtask link."""
+    if mode == MODE_BY_SUBTASK and target.source != SOURCE_API:
+        raise SystemExit(
+            f"--by-subtask requires --target-source api (got {target.source}). "
+            "Subtask grouping reads r_subtaskToCaseResults_c_subtaskId from the "
+            "Testray caseresult object — only the api fetch surfaces it. Re-run "
+            "with --target-source api, or drop --by-subtask for per-test mode."
+        )
+
+
 def _finalize_bundle(
     df: pd.DataFrame, run_id: str, run_dir: Path,
     classifier: str,
@@ -1238,6 +1752,7 @@ def _finalize_bundle(
     build_a: int, build_b: int, hash_a: str, hash_b: str,
     routine_id: int | None, build_a_name: str, build_b_name: str,
     git_repo: Path,
+    mode: str = MODE_PER_TEST,
 ) -> Path:
     print(f"→ Step 3/6 git diff …")
     diff_path = run_dir / "git_diff_full.diff"
@@ -1276,22 +1791,76 @@ def _finalize_bundle(
         "status_a", "status_b", "known_flaky", "linked_issues",
         "error_message", "pre_classification",
     ]
+    if "subtask_id" in df.columns:
+        diff_list_cols.append("subtask_id")
     df[diff_list_cols].to_csv(run_dir / "diff_list.csv", index=False)
 
     print(f"→ Step 6/6 prompt + schema + run.yml …")
-    write_results_schema(run_dir)
-    write_prompt(
-        run_dir,
-        run_id=run_id, classifier=classifier,
-        build_a=build_a, build_b=build_b,
-        hash_a=hash_a, hash_b=hash_b,
-        routine_id=routine_id,
-        build_a_name=build_a_name, build_b_name=build_b_name,
-        df_to_classify=df_to_cls, df_auto=df_auto, df_flaky=df_flaky,
-        hunks_path=hunks_path,
-        full_diff_path=diff_path,
-        git_repo=git_repo,
-    )
+
+    if mode == MODE_BY_SUBTASK:
+        if "subtask_id" not in df.columns:
+            raise SystemExit(
+                "Internal error: --by-subtask was requested but no subtask_id "
+                "column reached _finalize_bundle. fetch_build_caseresults_api "
+                "or compute_test_diff failed to propagate it. Re-check the "
+                "target source — it must be api."
+            )
+        # Group on the FULL df (all regressions) so each subtask appears
+        # exactly once. Then categorize each group by member composition:
+        #   - all-flaky          → flaky-only bucket (traceability)
+        #   - all-auto-classified → auto bucket (traceability)
+        #   - has any classifiable member → classifiable bucket
+        # A subtask with a mix of classifiable + auto members lands in the
+        # classifiable bucket; submit.py and assemble_dataframe_subtask
+        # handle the per-member differentiation.
+        all_groups      = compute_subtask_groups(df)
+        groups_to_cls:  list[dict] = []
+        groups_auto:    list[dict] = []
+        groups_flaky:   list[dict] = []
+        for g in all_groups:
+            if g["all_known_flaky"]:
+                groups_flaky.append(g)
+            elif g["all_pre_classified"]:
+                groups_auto.append(g)
+            else:
+                groups_to_cls.append(g)
+        write_diff_list_subtasks(run_dir, all_groups)
+        write_results_schema_subtask(run_dir)
+        write_prompt_subtask(
+            run_dir,
+            run_id=run_id, classifier=classifier,
+            build_a=build_a, build_b=build_b,
+            hash_a=hash_a, hash_b=hash_b,
+            routine_id=routine_id,
+            build_a_name=build_a_name, build_b_name=build_b_name,
+            groups_to_classify=groups_to_cls,
+            groups_auto=groups_auto,
+            groups_flaky=groups_flaky,
+            n_member_cases=sum(g["size"] for g in groups_to_cls),
+            n_auto_cases=len(df_auto),
+            n_flaky_cases=len(df_flaky),
+            hunks_path=hunks_path,
+            full_diff_path=diff_path,
+            git_repo=git_repo,
+        )
+        print(f"   subtask groups: {len(groups_to_cls)} to classify "
+              f"(covering {sum(g['size'] for g in groups_to_cls)} cases), "
+              f"{len(groups_auto)} auto-only, {len(groups_flaky)} flaky-only")
+    else:
+        write_results_schema(run_dir)
+        write_prompt(
+            run_dir,
+            run_id=run_id, classifier=classifier,
+            build_a=build_a, build_b=build_b,
+            hash_a=hash_a, hash_b=hash_b,
+            routine_id=routine_id,
+            build_a_name=build_a_name, build_b_name=build_b_name,
+            df_to_classify=df_to_cls, df_auto=df_auto, df_flaky=df_flaky,
+            hunks_path=hunks_path,
+            full_diff_path=diff_path,
+            git_repo=git_repo,
+        )
+
     write_run_yml(
         run_dir,
         run_id=run_id,
@@ -1304,6 +1873,7 @@ def _finalize_bundle(
         total_failures=len(df),
         auto_classified=len(df_auto),
         flaky_excluded=len(df_flaky),
+        mode=mode,
     )
 
     rel = run_dir.relative_to(PROJECT_ROOT)
@@ -1313,8 +1883,10 @@ def _finalize_bundle(
     return run_dir
 
 
-def prepare(baseline: SideSpec, target: SideSpec, classifier: str) -> Path:
+def prepare(baseline: SideSpec, target: SideSpec, classifier: str,
+            mode: str = MODE_PER_TEST) -> Path:
     validate_combo(baseline, target)
+    validate_mode(baseline, target, mode)
 
     cfg         = load_config()
     testray_db  = cfg["databases"]["testray"]
@@ -1399,6 +1971,7 @@ def prepare(baseline: SideSpec, target: SideSpec, classifier: str) -> Path:
         routine_id=routine_id,
         build_a_name=meta_a["build_name"], build_b_name=meta_b["build_name"],
         git_repo=git_repo,
+        mode=mode,
     )
 
 
@@ -1493,11 +2066,17 @@ def main() -> None:
     _add_side_args(ap, "target")
     ap.add_argument("--classifier", default=DEFAULT_CLASSIFIER,
                     help=f"Provenance label (default: {DEFAULT_CLASSIFIER})")
+    ap.add_argument("--by-subtask", action="store_true",
+                    help="Subtask-aware mode: group regressions by Testray "
+                         "Subtask (testflow algorithm), classify once per "
+                         "group, fan out the verdict across member case-rows. "
+                         "Requires --target-source api.")
 
     args = ap.parse_args()
     baseline = _build_spec(args, "baseline")
     target   = _build_spec(args, "target")
-    prepare(baseline, target, args.classifier)
+    mode     = MODE_BY_SUBTASK if args.by_subtask else MODE_PER_TEST
+    prepare(baseline, target, args.classifier, mode=mode)
 
 
 if __name__ == "__main__":

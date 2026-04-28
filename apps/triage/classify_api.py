@@ -142,12 +142,29 @@ _FAILURES_MARKER = "## Failures to classify"
 _FAILURE_HEAD_RE = re.compile(r"^### (\d+)\. ", re.MULTILINE)
 _CASE_ID_RE      = re.compile(r"\*\*case_id:\*\*\s*(\d+)")
 
+# Subtask-mode markers
+_SUBTASK_HEAD_RE = re.compile(r"^### (\d+)\. Subtask ", re.MULTILINE)
+_SUBTASK_ID_RE   = re.compile(r"subtask_id=(\d+)")
+_CASE_IDS_LINE_RE = re.compile(r"\*\*case_ids:\*\*\s*([0-9, ]+?)(?:\(\+|$|·)", re.MULTILINE)
+_MEMBER_LINE_RE  = re.compile(r"^- \[(\d+)\]", re.MULTILINE)
+_AUTO_TRACE_HDR  = "## Auto-classified subtasks"
+_FLAKY_TRACE_HDR = "## Flaky-only subtasks"
+
 
 @dataclass
 class FailureSection:
     index:   int     # 1-based as shown in prompt.md
     case_id: int
     text:    str     # the full section text including header line
+
+
+@dataclass
+class SubtaskSection:
+    """One subtask block in subtask-mode prompt.md."""
+    index:      int            # 1-based as shown in prompt.md
+    subtask_id: int | None     # None for unmapped singletons
+    case_ids:   list[int]      # all member case_ids the verdict will fan to
+    text:       str            # the full section text
 
 
 def parse_prompt(prompt_md: Path) -> tuple[str, list[FailureSection]]:
@@ -195,19 +212,87 @@ def parse_prompt(prompt_md: Path) -> tuple[str, list[FailureSection]]:
     return header, sections
 
 
+def parse_prompt_subtask(prompt_md: Path) -> tuple[str, list[SubtaskSection]]:
+    """Split a subtask-mode prompt.md into (cacheable header, classifiable
+    subtask sections). Sections under the auto-classified / flaky-only
+    trace headers are dropped — they exist for human readability but the
+    classifier must not write entries for them."""
+    text = prompt_md.read_text(encoding="utf-8")
+    split_idx = text.find(_FAILURES_MARKER)
+    if split_idx < 0:
+        raise SystemExit(
+            f"prompt.md missing '{_FAILURES_MARKER}' marker — is this a valid run bundle?"
+        )
+
+    header = text[:split_idx].rstrip() + "\n"
+    body   = text[split_idx:]
+    body = body.split("\n", 1)[1] if "\n" in body else ""
+
+    # Truncate body at the first auto/flaky trace header — those subtasks are
+    # listed for traceability only and must not produce results.json entries.
+    cut = len(body)
+    for hdr in (_AUTO_TRACE_HDR, _FLAKY_TRACE_HDR):
+        idx = body.find(hdr)
+        if idx >= 0 and idx < cut:
+            cut = idx
+    classifiable = body[:cut]
+
+    matches = list(_SUBTASK_HEAD_RE.finditer(classifiable))
+    if not matches:
+        return header, []
+
+    sections: list[SubtaskSection] = []
+    for i, m in enumerate(matches):
+        start = m.start()
+        end   = matches[i + 1].start() if i + 1 < len(matches) else len(classifiable)
+        chunk = classifiable[start:end].rstrip() + "\n"
+
+        idx = int(m.group(1))
+        sid_match = _SUBTASK_ID_RE.search(chunk[:200])  # in the header line
+        sid = int(sid_match.group(1)) if sid_match else None
+
+        # Pull case_ids: prefer the dedicated **case_ids:** line in meta;
+        # fall back to the explicit `- [N]` member list (more authoritative
+        # but truncated past 12 members in the prompt — unioning the two
+        # gives the complete set).
+        line_match = _CASE_IDS_LINE_RE.search(chunk)
+        line_ids: list[int] = []
+        if line_match:
+            line_ids = [int(x.strip()) for x in line_match.group(1).split(",") if x.strip().isdigit()]
+        member_ids = [int(m.group(1)) for m in _MEMBER_LINE_RE.finditer(chunk)]
+        combined = []
+        seen = set()
+        for cid in (member_ids + line_ids):
+            if cid not in seen:
+                seen.add(cid)
+                combined.append(cid)
+        if not combined:
+            raise SystemExit(
+                f"Subtask #{idx} in prompt.md has no resolvable case_ids "
+                f"(neither **case_ids:** line nor `- [N]` member list)."
+            )
+        sections.append(SubtaskSection(
+            index=idx, subtask_id=sid, case_ids=combined, text=chunk,
+        ))
+
+    return header, sections
+
+
 # ---------------------------------------------------------------------------
 # Batching — pack failure sections under a char budget
 # ---------------------------------------------------------------------------
 
 def pack_batches(
-    sections: list[FailureSection], max_chars: int,
-) -> list[list[FailureSection]]:
+    sections: list, max_chars: int,
+) -> list[list]:
     """Greedy pack: append sections into the current batch until adding
     the next one would exceed max_chars, then start a new batch. Any
     single section larger than max_chars still gets its own batch (we
-    don't split a single failure's hunks across calls)."""
-    batches: list[list[FailureSection]] = []
-    current: list[FailureSection] = []
+    don't split a single failure's hunks across calls). Works for both
+    FailureSection (per-test) and SubtaskSection (subtask mode) since
+    both have a `.text` attribute."""
+    batches: list[list] = []
+    current: list = []
     current_chars = 0
 
     for s in sections:
@@ -271,33 +356,83 @@ _SYSTEM_INSTRUCTIONS = (
     "preferred over explicit dismissal."
 )
 
+_SYSTEM_INSTRUCTIONS_SUBTASK = (
+    "You are a developer at Liferay triaging test regressions between two "
+    "builds. **Unit of analysis: Testray Subtask** — each subtask groups N "
+    "case-results that share a single error fingerprint. You write ONE "
+    "verdict per subtask (BUG, NEEDS_REVIEW, or FALSE_POSITIVE), and the "
+    "verdict fans out to every member case_id in the group when the bundle "
+    "is submitted.\n\n"
+    "Output format: one entry per subtask. Each entry MUST include "
+    "`subtask_id` (integer or null), `case_ids` (non-empty array of every "
+    "member case_id you saw in that subtask block — do not invent or omit), "
+    "`classification`, `confidence`, and `reason`. Use `culprit_file` when "
+    "classification=BUG (required), null otherwise.\n\n"
+    "The exact same rubric applies as in per-test mode, only at the subtask "
+    "level. Confidence is structural: BUG requires `high` confidence that a "
+    "hunk in the diff caused the *shared* error across the group's members; "
+    "a plausible theory at `medium` confidence is NEEDS_REVIEW. Multiple "
+    "candidate causes (2+ ticket clusters affecting the group's space) → "
+    "NEEDS_REVIEW with all candidates in `specific_change` separated by `; `, "
+    "even at high confidence.\n\n"
+    "FALSE_POSITIVE is appropriate when the shared error is clearly "
+    "environmental (timeouts, gradle/build infra, TEST_SETUP_ERROR, Poshi "
+    "ElementNotFoundPoshiRunnerException, Selenium NoSuchElementException) "
+    "or when no diff hunk could plausibly reach the group's failing tests "
+    "via direct or transitive dependencies. The fact that one verdict covers "
+    "many member tests does not change the rubric — a flake pattern is still "
+    "a flake pattern when 30 tests share it. For borderline transitive "
+    "cases prefer NEEDS_REVIEW over dismissal.\n\n"
+    "Do not write entries for subtasks listed under '## Auto-classified' or "
+    "'## Flaky-only' headers — those are traceability-only and submit.py "
+    "handles them directly. Only classifiable subtasks (those above those "
+    "section headers) need an entry."
+)
+
 
 def _build_user_text(
-    batch: list[FailureSection], batch_number: int, total_batches: int,
-    classifier: str, run_id: str,
+    batch: list, batch_number: int, total_batches: int,
+    classifier: str, run_id: str, mode: str = "per-test",
 ) -> str:
     """Wrap the per-failure sections with headers naming the expected
     run_id / classifier so the structured output lands with the right
-    provenance."""
+    provenance. `mode` selects the output instructions — per-test mode
+    expects `testray_case_id` per entry, subtask mode expects
+    `subtask_id` + `case_ids` array per entry."""
+    if mode == "by-subtask":
+        instructions = (
+            f"\n\nPopulate run_id=\"{run_id}\" and classifier=\"{classifier}\" in "
+            f"the output. Include exactly one result per Subtask shown above. "
+            f"For each entry: set `subtask_id` to the integer from the section "
+            f"header (or null when the section header says 'no subtask link "
+            f"(singleton)'); set `case_ids` to the full list of member case_ids "
+            f"shown in that section's `**case_ids:**` line and `**members:**` "
+            f"list (every case_id, do not omit any). Do not invent case_ids."
+        )
+    else:
+        instructions = (
+            f"\n\nPopulate run_id=\"{run_id}\" and classifier=\"{classifier}\" in "
+            f"the output. Include exactly one result per failure shown above, "
+            f"keyed by its **case_id** value. Do not invent case_ids."
+        )
     return (
         f"## Failures to classify (batch {batch_number} of {total_batches})\n\n"
         + "".join(s.text for s in batch)
-        + f"\n\nPopulate run_id=\"{run_id}\" and classifier=\"{classifier}\" in "
-          f"the output. Include exactly one result per failure shown above, "
-          f"keyed by its **case_id** value. Do not invent case_ids."
+        + instructions
     )
 
 
 def call_api(
     client: anthropic.Anthropic,
     system_header: str,
-    batch: list[FailureSection],
+    batch: list,
     cfg: dict,
     classifier: str,
     run_id: str,
     batch_number: int,
     total_batches: int,
     api_schema: dict,
+    mode: str = "per-test",
 ) -> tuple[list[dict], dict]:
     """Send one batch. Returns (parsed_results, usage_info).
 
@@ -306,14 +441,17 @@ def call_api(
     JSONDecodeError as belt-and-braces (shouldn't happen with structured
     outputs, but one batch of wasted credit is cheaper than a full rerun)."""
     user_text = _build_user_text(
-        batch, batch_number, total_batches, classifier, run_id,
+        batch, batch_number, total_batches, classifier, run_id, mode=mode,
     )
+
+    instructions = (_SYSTEM_INSTRUCTIONS_SUBTASK if mode == "by-subtask"
+                    else _SYSTEM_INSTRUCTIONS)
 
     request_args = dict(
         model=cfg["model"],
         max_tokens=cfg["max_output_tokens"],
         system=[
-            {"type": "text", "text": _SYSTEM_INSTRUCTIONS},
+            {"type": "text", "text": instructions},
             {
                 "type": "text",
                 "text": system_header,
@@ -387,55 +525,72 @@ def classify(run_dir: Path, classifier: str, dry_run: bool) -> Path:
 
     meta   = yaml.safe_load(run_yml.read_text())
     run_id = meta["run_id"]
+    mode   = meta.get("mode") or "per-test"
+    if mode not in ("per-test", "by-subtask"):
+        raise SystemExit(f"Unknown mode in run.yml: {mode!r}")
     schema = json.loads(schema_path.read_text())
     api_schema = prepare_api_schema(schema)
 
-    header, sections = parse_prompt(prompt_md)
+    if mode == "by-subtask":
+        header, sections = parse_prompt_subtask(prompt_md)
+    else:
+        header, sections = parse_prompt(prompt_md)
     if not sections:
         raise SystemExit(
-            "No failure sections found in prompt.md — nothing to classify. "
-            "(All cases may be pre-classified or flaky; check run.yml.)"
+            f"No {'subtask' if mode == 'by-subtask' else 'failure'} sections "
+            f"found in prompt.md — nothing to classify. (All cases may be "
+            f"pre-classified or flaky; check run.yml.)"
         )
 
     cfg = load_api_config()
     batches = pack_batches(sections, cfg["max_chars_per_batch"])
 
+    unit = "subtasks" if mode == "by-subtask" else "failures"
     print(f"Run:          {run_id}")
     print(f"Classifier:   {classifier}")
+    print(f"Mode:         {mode}")
     print(f"Model:        {cfg['model']}  (effort={cfg['effort']})")
-    print(f"Failures:     {len(sections)}")
+    print(f"{unit.capitalize():14s}{len(sections)}"
+          + (f"  (covering {sum(len(s.case_ids) for s in sections)} member case-results)"
+             if mode == "by-subtask" else ""))
     print(f"Batches:      {len(batches)} "
           f"(max {cfg['max_chars_per_batch']:,} chars/batch)")
 
     if dry_run:
         batches_dir = run_dir / "batches"
         batches_dir.mkdir(exist_ok=True)
+        active_instructions = (_SYSTEM_INSTRUCTIONS_SUBTASK if mode == "by-subtask"
+                                else _SYSTEM_INSTRUCTIONS)
         for i, b in enumerate(batches, 1):
             total = sum(len(s.text) for s in b)
-            print(f"  batch {i}: {len(b)} failures, {total:,} chars "
+            print(f"  batch {i}: {len(b)} {unit}, {total:,} chars "
                   f"(~{total // 4:,} tokens)")
-            # Dump the exact prompt that would be sent so it can be inspected.
             user_text = _build_user_text(
-                b, i, len(batches), classifier, run_id,
+                b, i, len(batches), classifier, run_id, mode=mode,
             )
+            if mode == "by-subtask":
+                ids_label = (f"subtask_ids: {[s.subtask_id for s in b]}; "
+                              f"member_count: {sum(len(s.case_ids) for s in b)}")
+            else:
+                ids_label = f"case_ids: {[s.case_id for s in b]}"
             preview = (
                 f"# Batch {i} of {len(batches)} — what would be sent to Anthropic\n\n"
-                f"**Run:** `{run_id}`\n"
+                f"**Run:** `{run_id}` · **Mode:** `{mode}`\n"
                 f"**Classifier:** `{classifier}`\n"
                 f"**Model:** `{cfg['model']}` · effort=`{cfg['effort']}` · "
                 f"max_tokens={cfg['max_output_tokens']}\n"
-                f"**Failures in this batch:** {len(b)} "
-                f"(case_ids: {[s.case_id for s in b]})\n"
+                f"**{unit.capitalize()} in this batch:** {len(b)} "
+                f"({ids_label})\n"
                 f"**Output schema:** validated against `results.schema.json` "
                 f"(if/then stripped for API call, enforced post-hoc)\n\n"
                 f"---\n\n"
-                f"## System block 1 — instructions (not cached, ~{len(_SYSTEM_INSTRUCTIONS)} chars)\n\n"
-                f"{_SYSTEM_INSTRUCTIONS}\n\n"
+                f"## System block 1 — instructions (not cached, ~{len(active_instructions)} chars)\n\n"
+                f"{active_instructions}\n\n"
                 f"---\n\n"
                 f"## System block 2 — shared header (cached, ~{len(header):,} chars)\n\n"
                 f"{header}\n\n"
                 f"---\n\n"
-                f"## User message — per-batch failures + output instructions "
+                f"## User message — per-batch {unit} + output instructions "
                 f"(~{len(user_text):,} chars)\n\n"
                 f"{user_text}\n"
             )
@@ -449,8 +604,16 @@ def classify(run_dir: Path, classifier: str, dry_run: bool) -> Path:
     client = build_client()
 
     all_results: list[dict] = []
-    seen_ids: set[int] = set()
-    expected_ids = {s.case_id for s in sections}
+    if mode == "by-subtask":
+        # Track subtask_ids (None for unmapped singletons — track those by
+        # the synthetic key of their first case_id since None is not unique)
+        seen_subtask_ids: set[int] = set()
+        seen_case_ids:    set[int] = set()
+        expected_subtask_ids = {s.subtask_id for s in sections if s.subtask_id is not None}
+        expected_case_ids    = {cid for s in sections for cid in s.case_ids}
+    else:
+        seen_ids: set[int] = set()
+        expected_ids = {s.case_id for s in sections}
 
     usage_totals = {
         "input_tokens": 0, "output_tokens": 0,
@@ -459,7 +622,7 @@ def classify(run_dir: Path, classifier: str, dry_run: bool) -> Path:
 
     for i, batch in enumerate(batches, 1):
         total = sum(len(s.text) for s in batch)
-        print(f"\n→ batch {i}/{len(batches)}: {len(batch)} failures "
+        print(f"\n→ batch {i}/{len(batches)}: {len(batch)} {unit} "
               f"({total:,} chars, ~{total // 4:,} tokens)")
 
         results, usage = call_api(
@@ -472,21 +635,48 @@ def classify(run_dir: Path, classifier: str, dry_run: bool) -> Path:
             batch_number=i,
             total_batches=len(batches),
             api_schema=api_schema,
+            mode=mode,
         )
 
-        batch_ids = {s.case_id for s in batch}
-        for r in results:
-            cid = r.get("testray_case_id")
-            if cid in seen_ids:
-                print(f"  WARN: duplicate testray_case_id={cid} — keeping first",
-                      file=sys.stderr)
-                continue
-            if cid not in batch_ids:
-                print(f"  WARN: model emitted unexpected testray_case_id={cid} "
-                      f"(not in this batch) — dropping", file=sys.stderr)
-                continue
-            seen_ids.add(cid)
-            all_results.append(r)
+        if mode == "by-subtask":
+            batch_subtask_ids = {s.subtask_id for s in batch if s.subtask_id is not None}
+            batch_case_ids    = {cid for s in batch for cid in s.case_ids}
+            for r in results:
+                sid = r.get("subtask_id")
+                cids = r.get("case_ids") or []
+                if isinstance(sid, int) and sid in seen_subtask_ids:
+                    print(f"  WARN: duplicate subtask_id={sid} — keeping first",
+                          file=sys.stderr)
+                    continue
+                if isinstance(sid, int) and sid not in batch_subtask_ids:
+                    print(f"  WARN: model emitted subtask_id={sid} "
+                          f"(not in this batch) — dropping", file=sys.stderr)
+                    continue
+                # Validate every case_id in the entry is from this batch and
+                # not yet claimed by another entry.
+                bad = [c for c in cids if c not in batch_case_ids or c in seen_case_ids]
+                if bad:
+                    print(f"  WARN: subtask_id={sid} entry has invalid/duplicate "
+                          f"case_ids={bad} — dropping entry", file=sys.stderr)
+                    continue
+                if isinstance(sid, int):
+                    seen_subtask_ids.add(sid)
+                seen_case_ids.update(cids)
+                all_results.append(r)
+        else:
+            batch_ids = {s.case_id for s in batch}
+            for r in results:
+                cid = r.get("testray_case_id")
+                if cid in seen_ids:
+                    print(f"  WARN: duplicate testray_case_id={cid} — keeping first",
+                          file=sys.stderr)
+                    continue
+                if cid not in batch_ids:
+                    print(f"  WARN: model emitted unexpected testray_case_id={cid} "
+                          f"(not in this batch) — dropping", file=sys.stderr)
+                    continue
+                seen_ids.add(cid)
+                all_results.append(r)
 
         for k in usage_totals:
             usage_totals[k] += usage.get(k, 0)
@@ -498,13 +688,22 @@ def classify(run_dir: Path, classifier: str, dry_run: bool) -> Path:
         if i < len(batches):
             time.sleep(cfg["delay_between"])
 
-    missing = expected_ids - seen_ids
-    if missing:
-        print(f"\nWARN: {len(missing)} failure(s) got no classification from "
-              f"the model — they will be absent from results.json and "
-              f"submit.py will default them to NEEDS_REVIEW: "
-              f"{sorted(missing)[:10]}{'...' if len(missing) > 10 else ''}",
-              file=sys.stderr)
+    if mode == "by-subtask":
+        missing = expected_case_ids - seen_case_ids
+        if missing:
+            print(f"\nWARN: {len(missing)} member case_id(s) got no verdict from "
+                  f"the model — they will be absent from results.json and "
+                  f"submit.py will default them to NEEDS_REVIEW: "
+                  f"{sorted(missing)[:10]}{'...' if len(missing) > 10 else ''}",
+                  file=sys.stderr)
+    else:
+        missing = expected_ids - seen_ids
+        if missing:
+            print(f"\nWARN: {len(missing)} failure(s) got no classification from "
+                  f"the model — they will be absent from results.json and "
+                  f"submit.py will default them to NEEDS_REVIEW: "
+                  f"{sorted(missing)[:10]}{'...' if len(missing) > 10 else ''}",
+                  file=sys.stderr)
 
     payload = {
         "run_id":     run_id,
