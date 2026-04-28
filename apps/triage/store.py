@@ -41,6 +41,11 @@ CREATE TABLE IF NOT EXISTS fact_triage_results (
     testray_case_id      BIGINT,
     test_case            TEXT,
 
+    -- Testray Subtask grouping (for --by-subtask classifier runs)
+    -- NULL when the row came from a per-test run, or when the target build
+    -- had no testflow / no subtask link on this caseresult.
+    subtask_id           BIGINT,
+
     -- Component/team (from dim_module_component_map)
     component_name       VARCHAR(255),
     team_name            VARCHAR(255),
@@ -83,6 +88,7 @@ CREATE_INDEX_SQL = [
     "CREATE INDEX IF NOT EXISTS idx_triage_classifier     ON fact_triage_results (classifier);",
     "CREATE INDEX IF NOT EXISTS idx_triage_component     ON fact_triage_results (component_name);",
     "CREATE INDEX IF NOT EXISTS idx_triage_run_date      ON fact_triage_results (run_date);",
+    "CREATE INDEX IF NOT EXISTS idx_triage_subtask_id    ON fact_triage_results (subtask_id) WHERE subtask_id IS NOT NULL;",
 ]
 
 
@@ -104,14 +110,14 @@ def ensure_schema():
 UPSERT_SQL = """
 INSERT INTO fact_triage_results (
     run_date, build_id_a, build_id_b, git_hash_a, git_hash_b,
-    testray_case_id, test_case, component_name, team_name,
+    testray_case_id, test_case, subtask_id, component_name, team_name,
     status_a, status_b, known_flaky, linked_issues, error_message,
     match_strategy, pre_classification, classification, classifier,
     specific_change, reason, batch_number, tokens_in, tokens_out, api_error
 )
 VALUES (
     %(run_date)s, %(build_id_a)s, %(build_id_b)s, %(git_hash_a)s, %(git_hash_b)s,
-    %(testray_case_id)s, %(test_case)s, %(component_name)s, %(team_name)s,
+    %(testray_case_id)s, %(test_case)s, %(subtask_id)s, %(component_name)s, %(team_name)s,
     %(status_a)s, %(status_b)s, %(known_flaky)s, %(linked_issues)s, %(error_message)s,
     %(match_strategy)s, %(pre_classification)s, %(classification)s, %(classifier)s,
     %(specific_change)s, %(reason)s, %(batch_number)s, %(tokens_in)s, %(tokens_out)s,
@@ -126,6 +132,7 @@ ON CONFLICT (build_id_b, testray_case_id, classifier) DO UPDATE SET
     component_name    = EXCLUDED.component_name,
     team_name         = EXCLUDED.team_name,
     match_strategy    = EXCLUDED.match_strategy,
+    subtask_id        = EXCLUDED.subtask_id,
     tokens_in         = EXCLUDED.tokens_in,
     tokens_out        = EXCLUDED.tokens_out,
     api_error         = EXCLUDED.api_error,
@@ -172,6 +179,7 @@ def upsert_triage_results(
                     "git_hash_b":        git_hash_b,
                     "testray_case_id":   _safe_int(row.get("testray_case_id")),
                     "test_case":         _safe_str(row.get("test_case")),
+                    "subtask_id":        _safe_int(row.get("subtask_id")),
                     "component_name":    _safe_str(row.get("component_name")),
                     "team_name":         _safe_str(row.get("team_name")),
                     "status_a":          _safe_str(row.get("status_a")),

@@ -225,10 +225,12 @@ def _testray_fetch_paginated(
 
 
 def fetch_case_metadata(case_ids: list[int], cfg: dict) -> dict[int, dict]:
-    """Fetch per-case metadata (name + flaky flag) from Testray's case object.
-    Returns {case_id: {"name": str, "flaky": bool}}; case_ids that 404 are
-    omitted. Used by enrich_api_case_names() to backfill test_case columns
-    that api caseresults don't populate.
+    """Fetch per-case metadata (name, flaky flag, component_id) from Testray's
+    case object. Returns
+    {case_id: {"name": str, "flaky": bool, "component_id": int|None}};
+    case_ids that 404 are omitted. Used to backfill `test_case` /
+    `component_name` columns on api-source rows so the join + fragment matcher
+    have something to anchor on.
 
     One GET /o/c/cases/{id} per case_id; expected ≤ ~100 case_ids per run
     after diff dedup, so per-id calls are acceptable. Batch via
@@ -252,12 +254,95 @@ def fetch_case_metadata(case_ids: list[int], cfg: dict) -> dict[int, dict]:
             if e.code == 404:
                 continue
             raise
+        comp_id = body.get("r_componentToCases_c_componentId")
         out[int(cid)] = {
-            "name":  body.get("name") or "",
-            "flaky": str(body.get("flaky")).lower() == "true",
+            "name":         body.get("name") or "",
+            "flaky":        str(body.get("flaky")).lower() == "true",
+            "component_id": int(comp_id) if comp_id else None,
         }
         time.sleep(0.05)
     return out
+
+
+def fetch_component_metadata(component_ids: list[int], cfg: dict) -> dict[int, str]:
+    """Resolve {component_id: name} via /o/c/components/{id}. Used to backfill
+    `component_name` on api-source caseresults so (case_name, component_name)
+    joins work for csv/tar × api combos."""
+    if not component_ids:
+        return {}
+    token = _testray_oauth_token(cfg)
+    base = cfg["base_url"].rstrip("/")
+    out: dict[int, str] = {}
+    for cid in component_ids:
+        url = f"{base}/o/c/components/{cid}"
+        req = urllib.request.Request(
+            url, headers={"Authorization": f"Bearer {token}"},
+        )
+        try:
+            with urllib.request.urlopen(req, timeout=30) as resp:
+                body = json.loads(resp.read())
+        except urllib.error.HTTPError as e:
+            if e.code == 401:
+                raise SystemExit("Testray API 401 — token expired. Re-run.")
+            if e.code == 404:
+                continue
+            raise
+        name = body.get("name")
+        if name:
+            out[int(cid)] = name
+        time.sleep(0.05)
+    return out
+
+
+def enrich_api_caseresults(df: pd.DataFrame, cfg: dict) -> pd.DataFrame:
+    """Backfill `case_name`, `case_flaky`, and `component_name` on a pre-diff
+    api-source dataframe so it can be joined against a csv/tar side on
+    (case_name, component_name). Idempotent — does nothing if every row
+    already has both name and component_name. One /o/c/cases call per
+    case_id, plus one /o/c/components call per unique component_id."""
+    if df.empty:
+        return df
+    needs = (df["case_name"].isna() | (df["case_name"].astype(str).str.strip() == "")) \
+          | (df["component_name"].isna() | (df["component_name"].astype(str).str.strip() == ""))
+    if not needs.any():
+        return df
+    case_ids = sorted({
+        int(x) for x in df.loc[needs, "case_id"].dropna()
+    })
+    if not case_ids:
+        return df
+    print(f"   enriching {len(case_ids)} api case(s) with name + component …")
+    case_meta = fetch_case_metadata(case_ids, cfg)
+    if not case_meta:
+        print(f"   no cases returned — leaving rows unenriched", file=sys.stderr)
+        return df
+    comp_ids = sorted({
+        m["component_id"] for m in case_meta.values() if m.get("component_id")
+    })
+    comp_names = fetch_component_metadata(comp_ids, cfg)
+
+    df = df.copy()
+    name_filled = comp_filled = flaky_marked = 0
+    for cid, meta in case_meta.items():
+        row_mask = df["case_id"] == cid
+        if not row_mask.any():
+            continue
+        if meta.get("name"):
+            cur = df.loc[row_mask, "case_name"]
+            blank = cur.isna() | (cur.astype(str).str.strip() == "")
+            df.loc[row_mask & blank, "case_name"] = meta["name"]
+            name_filled += int(blank.sum())
+        if meta.get("component_id") and meta["component_id"] in comp_names:
+            cur = df.loc[row_mask, "component_name"]
+            blank = cur.isna() | (cur.astype(str).str.strip() == "")
+            df.loc[row_mask & blank, "component_name"] = comp_names[meta["component_id"]]
+            comp_filled += int(blank.sum())
+        if meta.get("flaky"):
+            df.loc[row_mask, "case_flaky"] = True
+            flaky_marked += int(row_mask.sum())
+    print(f"   filled {name_filled} case_name, {comp_filled} component_name, "
+          f"{flaky_marked} flaky flag(s)")
+    return df
 
 
 def enrich_api_case_names(df: pd.DataFrame, cfg: dict) -> pd.DataFrame:
@@ -1138,35 +1223,12 @@ def write_prompt(run_dir: Path, *, run_id: str, classifier: str,
 # ---------------------------------------------------------------------------
 
 def validate_combo(baseline: SideSpec, target: SideSpec) -> None:
-    """Hard-error on combos we can't currently join.
-
-    csv/tar × api (either direction): CSV and tar carry (case_name,
-    component_name) but no case_id; API carries case_id but no names.
-    No common join key → zero-row join.
-    """
-    sides = {baseline.source, target.source}
-    if sides == {SOURCE_CSV, SOURCE_API}:
-        raise SystemExit(
-            "For this PoC, csv and api sources can't be combined "
-            f"(baseline={baseline.source}, target={target.source}). CSV exports "
-            "carry (case_name, component_name) but no case_id; API responses "
-            "carry case_id but no names. No common join key.\n"
-            "\n"
-            "Workarounds today: use db on at least one side, or use the same "
-            "source on both sides (api×api, csv×csv).\n"
-            "\n"
-            "Backlog: enrich api rows with case names (follow the case link), "
-            "or csv rows with case_ids (lookup by (name, component))."
-        )
-    if sides == {SOURCE_TAR, SOURCE_API}:
-        raise SystemExit(
-            f"tar and api sources can't be combined "
-            f"(baseline={baseline.source}, target={target.source}). tar archives "
-            "carry (case_name, component_name) but no case_id; API responses "
-            "carry case_id but no names. No common join key.\n"
-            "\n"
-            "Workarounds: use db or csv on one side instead of api."
-        )
+    """All source combinations are now supported. csv/tar × api was previously
+    blocked (no shared join key — csv/tar have names, api has case_ids), but
+    `enrich_api_caseresults` now backfills name + component on api sides
+    pre-diff via /o/c/cases and /o/c/components, so the join falls back to
+    (case_name, component_name) cleanly."""
+    return
 
 
 def _finalize_bundle(
@@ -1274,6 +1336,14 @@ def prepare(baseline: SideSpec, target: SideSpec, classifier: str) -> Path:
         raise SystemExit(f"No case results for target build {target.build_id} "
                          f"(source={target.source}).")
     print(f"   baseline rows: {len(baseline_df)}  target rows: {len(target_df)}")
+
+    # api side caseresults don't carry case_name / component_name. Enrich
+    # before compute_test_diff so (case_name, component_name) joins work
+    # for csv/tar × api combos.
+    if baseline.source == SOURCE_API and target.source in (SOURCE_CSV, SOURCE_TAR):
+        baseline_df = enrich_api_caseresults(baseline_df, cfg["testray"])
+    if target.source == SOURCE_API and baseline.source in (SOURCE_CSV, SOURCE_TAR):
+        target_df = enrich_api_caseresults(target_df, cfg["testray"])
 
     if target.source in (SOURCE_API, SOURCE_TAR):
         print(f"   NOTE: {target.source} targets do not populate `linked_issues` — the Jira",
